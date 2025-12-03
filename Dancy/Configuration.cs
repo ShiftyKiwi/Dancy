@@ -1,7 +1,7 @@
-﻿using Dalamud.Configuration;
+using Dalamud.Configuration;
 using System;
 
-namespace SamplePlugin;
+namespace Dancy;
 
 [Serializable]
 public class Configuration : IPluginConfiguration
@@ -10,6 +10,8 @@ public class Configuration : IPluginConfiguration
 
     public bool IsConfigWindowMovable { get; set; } = true;
     public bool SomePropertyToBeSavedAndWithADefault { get; set; } = true;
+
+    public string PenumbraPath { get; set; } = string.Empty;
 
     // The below exist just to make saving less cumbersome
     public void Save()

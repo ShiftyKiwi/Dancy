@@ -1,0 +1,29 @@
+{
+    "Author": "kcuY",
+    "Name": "Dancy",
+    "Punchline": "Change Emotes in Penumbra Mods.",
+    "Description": "Change Emotes in Penumbra Mods.",
+    "Tags": [
+        "animation",
+        "anims",
+        "mods",
+        "dance",
+        "penumbra",
+        "emotes"
+    ],
+    "InternalName": "Dancy",
+    "AssemblyVersion": "0.0.0.1",
+    "TestingAssemblyVersion": "0.0.0.1",
+    "RepoUrl": "https://github.com/lnjanos",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 13,
+    "TestingDalamudApiLevel": 12,
+    "IsHide": "False",
+    "IsTestingExclusive": "False",
+    "DownloadCount": 10,
+    "LastUpdate": 1733780713,
+    "DownloadLinkInstall": "https://github.com/lnjanos/yueImport/releases/download/release/soundy_0.0.0.1.zip",
+    "DownloadLinkUpdate": "https://github.com/lnjanos/yueImport/releases/download/release/soundy_0.0.0.1.zip",
+    "DownloadLinkTesting": "https://github.com/lnjanos/yueImport/releases/download/release/soundy_0.0.0.1.zip",
+    "IconUrl": "https://raw.githubusercontent.com/lnjanos/Dancy/refs/heads/master/dancy.png"
+}

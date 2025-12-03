@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Dalamud.NET.Sdk/13.1.0">
+  <PropertyGroup>
+    <Version>0.0.0.1</Version>
+    <Description>A sample plugin.</Description>
+    <PackageProjectUrl>https://github.com/goatcorp/SamplePlugin</PackageProjectUrl>
+    <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Dancy.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Penumbra.Api" Version="5.12.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ECommons">
+      <HintPath>..\..\peepingtim\ECommons\ECommons\bin\Debug\ECommons.dll</HintPath>
+    </Reference>
+    <Reference Include="VFXEditor">
+      <HintPath>..\..\..\Dalamud-VFXEditor-Original\VFXEditor\bin\Debug\VFXEditor.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>
