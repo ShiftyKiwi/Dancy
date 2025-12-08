@@ -51,7 +51,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "A useful message to display in /xlhelp"
+            HelpMessage = "Open Main Window"
         });
 
         // Tell the UI system that we want our windows to be drawn throught he window system
@@ -67,7 +67,6 @@ public sealed class Plugin : IDalamudPlugin
         // Add a simple message to the log with level set to information
         // Use /xllog to open the log window in-game
         // Example Output: 00:57:54.959 | INF | [Dancy] ===A cool log message from Dancy===
-        Log.Information($"===A cool log message from {PluginInterface.Manifest.Name}===");
 
         Core.EmoteLibrary.Initialize();
 

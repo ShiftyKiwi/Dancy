@@ -122,7 +122,6 @@ public static class PapEditor
                     }
                 }
 
-                Svc.Chat.Print("here");
                 // PapAnimation.Name umbiegen
                 if (file.Animations.Count > 0)
                 {
@@ -142,7 +141,6 @@ public static class PapEditor
                         Svc.Chat.PrintError("[Dancy] Could not access PapAnimation.Name via reflection.");
                     }
                 }
-                Svc.Chat.Print("there");
             }
 
             if (changedSomething)

@@ -13,13 +13,46 @@ namespace Dancy.Penumbra
             string modFolder,
             RemappableOption originalOption,
             LuminaEmote replacementEmote,
+            Dictionary<string, string> finalMappings)
+        {
+            var groupFiles = Directory.GetFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly);
+            string targetFilePath = groupFiles.FirstOrDefault(f =>
+                Path.GetFileName(f)!.Contains("yuck's dancy", StringComparison.OrdinalIgnoreCase))
+                ?? Path.Combine(modFolder, $"group_{groupFiles.Length + 1:D3}yucksdancy.json");
+
+            SoundyJsonRoot group;
+
+            if (File.Exists(targetFilePath))
+                group = JsonConvert.DeserializeObject<SoundyJsonRoot>(File.ReadAllText(targetFilePath)) ?? new SoundyJsonRoot();
+            else
+                group = new SoundyJsonRoot { Name = "Yuck\'s Dancy", Options = new List<Option>(), Type = "Multi", Priority = 9999 };
+
+            var opt = new Option
+            {
+                Name = $"({originalOption.GroupName}) {originalOption.OptionName} → {replacementEmote.Name}",
+                Description = $"Override using {replacementEmote.Name} ({replacementEmote.Command})",
+                Files = finalMappings,
+                FileSwaps = new Dictionary<string, string>(),
+                Manipulations = new List<object>()
+            };
+
+            group.Options!.Add(opt);
+
+            File.WriteAllText(targetFilePath, JsonConvert.SerializeObject(group, Formatting.Indented));
+        }
+
+
+        public static void CreateOrUpdateDancyGroupOld(
+            string modFolder,
+            RemappableOption originalOption,
+            LuminaEmote replacementEmote,
             IReadOnlyList<string> targetGamePaths,
             string newPapRel)
         {
             var groupFiles = Directory.GetFiles(modFolder, "group_*.json", SearchOption.TopDirectoryOnly);
             var targetGroup = groupFiles
                 .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f)
-                    .Contains("dancy", StringComparison.OrdinalIgnoreCase));
+                    .Contains("yuck's dancy", StringComparison.OrdinalIgnoreCase));
 
             SoundyJsonRoot group;
             string targetFilePath;
@@ -33,13 +66,13 @@ namespace Dancy.Penumbra
             else
             {
                 string index = (groupFiles.Length + 1).ToString("D3");
-                string fileName = $"group_{index}_Dancy.json";
+                string fileName = $"group_{index}_yucksdancy.json";
                 targetFilePath = Path.Combine(modFolder, fileName);
 
                 group = new SoundyJsonRoot
                 {
                     Version = "1.0.0",
-                    Name = "Dancy",
+                    Name = "Yuck\'s Dancy",
                     Description = "Created by Dancy",
                     Type = "Multi",
                     Priority = 9999,

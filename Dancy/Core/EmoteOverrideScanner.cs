@@ -1,5 +1,4 @@
 using Dancy.Core.Models;
-using ECommons.DalamudServices;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -29,12 +28,11 @@ public static class EmoteOverrideScanner
             string groupName = obj["Name"]?.ToString() ?? Path.GetFileNameWithoutExtension(file);
 
             var options = new JArray();
-
             JObject? rootOption = null;
 
             var baseOptions = obj["Options"] as JArray;
-
             var rootFiles = obj["Files"] as JObject;
+
             if (rootFiles != null)
             {
                 rootOption = new JObject
@@ -45,25 +43,15 @@ public static class EmoteOverrideScanner
             }
 
             if (baseOptions != null)
-            {
                 foreach (var opt in baseOptions)
-                {
                     options.Add(opt);
-                }
-            }
 
             if (rootOption != null)
-            {
                 options.Insert(0, rootOption);
-            }
-
-            if (options.Count == 0)
-                continue;
 
             foreach (var opt in options)
             {
                 string optionName = opt["Name"]?.ToString() ?? "Option";
-
                 var filesObj = opt["Files"] as JObject;
                 if (filesObj == null)
                     continue;
@@ -97,17 +85,23 @@ public static class EmoteOverrideScanner
                 if (entries.Count == 0)
                     continue;
 
-                bool safe = entries
-                    .Select(e => e.ModdedPapPath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Count() == 1;
+                // ✅ NEU: PAP-Gruppierung NACH QUELLDATEN
+                var papGroups = entries
+                    .GroupBy(e => e.ModdedPapPath, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => new PapSourceGroup
+                    {
+                        SourcePap = g.Key,
+                        GamePaths = g.Select(e => e.GamePath).ToList()
+                    })
+                    .ToList();
 
                 results.Add(new RemappableOption
                 {
                     GroupName = groupName,
                     OptionName = optionName,
-                    IsSafeToRemap = safe,
-                    Entries = entries
+                    Entries = entries,
+                    PapSources = papGroups,
+                    IsSafeToRemap = true // nur noch UI Hint
                 });
             }
         }

@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
+using ECommons.ChatMethods;
+using ECommons.DalamudServices;
 using Newtonsoft.Json;
 
 namespace Dancy.Files
@@ -117,5 +120,62 @@ namespace Dancy.Files
                 .ThenBy(r => r.GamePath, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
+
+        public static bool DancyExists(string modPath)
+        {
+            if (string.IsNullOrWhiteSpace(modPath) || !Directory.Exists(modPath))
+                return false;
+            
+            bool dancyGroupFound = Directory.GetFiles(modPath, "group_*.json", SearchOption.TopDirectoryOnly)
+                .Any(f => Path.GetFileNameWithoutExtension(f)
+                    .Contains("yuck's dancy", StringComparison.OrdinalIgnoreCase));
+
+            bool directoryFound = Directory.GetDirectories(modPath, "yucksdancy", SearchOption.TopDirectoryOnly)
+                .Any();
+
+            return dancyGroupFound || directoryFound;
+
+        }
+
+        public static bool RemoveDancy(string modPath)
+        {
+            if (string.IsNullOrWhiteSpace(modPath) || !Directory.Exists(modPath))
+                return false;
+
+            bool anyDeleted = false;
+            // 1) group_*.json Dateien mit "dancy" im Namen löschen
+            var groupFiles = Directory.GetFiles(modPath, "group_*.json", SearchOption.TopDirectoryOnly)
+                .Where(f => Path.GetFileNameWithoutExtension(f)
+                    .Contains("yuck\'s dancy", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var file in groupFiles)
+            {
+                try
+                {
+                    File.Delete(file);
+                    anyDeleted = true;
+                }
+                catch
+                {
+                    // Ignorieren
+                }
+            }
+            // 2) "dancy"-Verzeichnis löschen
+            var dancyDirs = Directory.GetDirectories(modPath, "yucksdancy", SearchOption.TopDirectoryOnly);
+            foreach (var dir in dancyDirs)
+            {
+                try
+                {
+                    Directory.Delete(dir, true);
+                    anyDeleted = true;
+                }
+                catch
+                {
+                    // Ignorieren
+                }
+            }
+            return anyDeleted;
+        }
     }
+
 }

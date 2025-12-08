@@ -14,6 +14,7 @@ using Penumbra.Api.IpcSubscribers;
 using Dancy.Core;
 using Dancy.Core.Models;
 using Dancy.Pap;
+using Dancy.Files;
 
 namespace Dancy.Windows
 {
@@ -40,6 +41,7 @@ namespace Dancy.Windows
         private bool isLoadingMods;
         private bool isScanningMod;
         private string? lastScanError;
+        string penRoot = String.Empty;
 
         // State: emote scanning
         private List<RemappableOption> remappableOptions = new();
@@ -79,6 +81,7 @@ namespace Dancy.Windows
         // ======================================
         private async Task LoadModListAsync()
         {
+            penRoot = PenumbraDirectoryResolver.GetPenumbraDirectory();
             isLoadingMods = true;
             try
             {
@@ -151,31 +154,84 @@ namespace Dancy.Windows
             isScanningMod = false;
         }
 
+        public override void OnOpen()
+        {
+            base.OnOpen();
+            _ = LoadModListAsync();
+        }
+
         // ======================================
         // Draw root
         // ======================================
         public override void Draw()
         {
-            using var mainChild = ImRaii.Child("DancyMainChild", new Vector2(-1, -1), true);
+            var totalHeight = ImGui.GetContentRegionAvail().Y;
 
-            DrawHeader();
-            ImGui.Spacing();
-            DrawStepNavigation();
-            ImGui.Spacing();
+            float headerHeight = totalHeight * 0.15f;
+            float contentHeight = totalHeight * 0.70f;
+            float footerHeight = totalHeight * 0.15f;
 
-            switch (currentStep)
+            // =========================
+            // HEADER (15%)
+            // =========================
+            using (ImRaii.Child("DancyHeader", new Vector2(-1, headerHeight), false))
             {
-                case WizardStep.SelectMod:
-                    DrawStepCard_SelectMod();
-                    break;
-                case WizardStep.SelectSource:
-                    DrawStepCard_SelectSource();
-                    break;
-                case WizardStep.SelectTarget:
-                    DrawStepCard_SelectTarget();
-                    break;
+                DrawHeader();
+                ImGui.Spacing();
+                DrawStepNavigation();
+            }
+
+            // =========================
+            // MAIN CONTENT (70%)
+            // =========================
+            using (ImRaii.Child("DancyContent", new Vector2(-1, contentHeight), true))
+            {
+                switch (currentStep)
+                {
+                    case WizardStep.SelectMod:
+                        DrawStepCard_SelectMod();
+                        break;
+
+                    case WizardStep.SelectSource:
+                        DrawStepCard_SelectSource();
+                        break;
+
+                    case WizardStep.SelectTarget:
+                        DrawStepCard_SelectTarget();
+                        break;
+                }
+            }
+
+            // =========================
+            // FOOTER (15%)
+            // =========================
+            using (ImRaii.Child("DancyFooter", new Vector2(-1, footerHeight), false))
+            {
+                DrawFooter();
             }
         }
+
+        private void DrawFooter()
+        {
+            ImGui.Separator();
+
+            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.65f, 0.0f, 1.0f));
+            ImGui.TextWrapped(
+                "Dancy is currently in Early Access. "
+              + "Some mods or emotes may not fully work yet. "
+              + "Please join the Discord if you encounter issues or have suggestions."
+            );
+            ImGui.PopStyleColor();
+
+            ImGui.Spacing();
+
+            if (ImGui.Button("Join the Dancy Discord"))
+            {
+                Util.OpenLink("https://discord.gg/asDM4dh4gz");
+            }
+        }
+
+
 
         // ======================================
         // Header + links
@@ -328,6 +384,11 @@ namespace Dancy.Windows
             ImGui.PushItemWidth(320f);
             ImGui.InputText("Search mods", ref modSearch, 200);
             ImGui.PopItemWidth();
+            ImGui.SameLine();
+            if (ImGui.Button("Refresh list"))
+            {
+                _ = LoadModListAsync();
+            }
 
             ImGui.Spacing();
 
@@ -399,6 +460,31 @@ namespace Dancy.Windows
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.8f, 0.8f, 0.8f, 1f));
             ImGui.TextDisabled("Reads JSON + PAP in this mod to find emote-based overrides.");
             ImGui.PopStyleColor();
+
+            if (DancyFileManager.DancyExists(Path.Combine(penRoot, selectedModDirectory)))
+            {
+                ImGui.Spacing();
+                ImGui.Spacing();
+                ImGui.Spacing();
+                ImGui.Spacing();
+                ImGui.Spacing();
+                // Make the remove button red
+                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.80f, 0.10f, 0.15f, 1.0f));
+                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.90f, 0.20f, 0.20f, 1.0f));
+                ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.70f, 0.05f, 0.10f, 1.0f));
+
+                if (ImGui.Button("Remove Dancy from mod"))
+                {
+                    bool isDeleted = DancyFileManager.RemoveDancy(Path.Combine(penRoot, selectedModDirectory));
+                    if (isDeleted)
+                        Svc.Chat.Print("[Dancy] Removed existing Dancy overrides from the selected mod.");
+                    else
+                        Svc.Chat.Print("[Dancy] No existing Dancy overrides found in the selected mod.");
+                    _ = reloadMod.Invoke(selectedModDirectory);
+                }
+
+                ImGui.PopStyleColor(3); // Button, ButtonHovered, ButtonActive
+            }
 
             EndCard();
         }
@@ -655,14 +741,18 @@ namespace Dancy.Windows
                 {
                     ImGui.TextWrapped(
                         "Note: Dancy does not change how long the emote runs.\n" +
-                        "Looped dances are ideal targets. One-shot emotes like /wave or /love will still stop after their normal short duration.");
+                        "Looped dances are ideal targets. One-shot emotes like /wave or /love will still stop after their normal short duration.\n"+
+                                "If you notice timing issues at the start of some animations: this is a known limitation and I am actively working on a solution.\n" +
+        "As a workaround, try using looped dances like Beesknees or Gold Dance.");
                 }
                 else
                 {
                     ImGui.TextWrapped(
                         "Warning: This target does not look like a looped dance.\n" +
                         "If you map a full dance mod to a one-shot emote (e.g. /wave, /blowkiss, /love), " +
-                        "the animation will still end quickly. That is normal game behavior, not a Dancy bug.");
+                        "the animation will still end quickly. That is normal game behavior, not a Dancy bug.\n"+
+                                "If you notice timing issues at the start of some animations: this is a known limitation and I am actively working on a solution.\n" +
+        "As a workaround, try using looped dances like Beesknees or Gold Dance.");
                 }
                 ImGui.PopStyleColor();
 
@@ -726,7 +816,7 @@ namespace Dancy.Windows
                     }
 
                     // 1) Ensure Dancy folders exist
-                    string dancyRoot = Path.Combine(modFolder, "dancy");
+                    string dancyRoot = Path.Combine(modFolder, "yucksdancy");
                     string papDir = Path.Combine(dancyRoot, "paps");
 
                     Directory.CreateDirectory(dancyRoot);
@@ -749,15 +839,13 @@ namespace Dancy.Windows
                         return;
                     }
 
-                    // 3) New PAP name / relative path
                     string newPapName = Guid.NewGuid().ToString("N") + ".pap";
                     string newPapAbs = Path.Combine(papDir, newPapName);
-                    string newPapRel = Path.Combine("dancy", "paps", newPapName).Replace('\\', '/');
+                    string newPapRel = Path.Combine("yucksdancy", "paps", newPapName).Replace('\\', '/');
 
                     foreach (var e in source.Entries)
                         e.NewPapPath = newPapRel;
 
-                    // 4) Target game PAP paths for replacement emote
                     var targetGamePaths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
                     if (targetGamePaths.Count == 0)
                     {
@@ -765,14 +853,12 @@ namespace Dancy.Windows
                         return;
                     }
 
-                    // 5) Apply override on framework thread
                     Svc.Framework.RunOnFrameworkThread(() =>
                     {
                         PapEditor.ApplyOverride(targetGamePaths[0], srcPap, newPapAbs);
                     });
 
-                    // 6) Create / update Dancy group
-                    Penumbra.PenumbraGroupWriter.CreateOrUpdateDancyGroup(
+                    Penumbra.PenumbraGroupWriter.CreateOrUpdateDancyGroupOld(
                         modFolder,
                         source,
                         target,
@@ -780,7 +866,6 @@ namespace Dancy.Windows
                         newPapRel
                     );
 
-                    // 7) Reload mod in Penumbra
                     try
                     {
                         reloadMod.Invoke(selectedModDirectory);
