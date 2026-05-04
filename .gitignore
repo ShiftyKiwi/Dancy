@@ -2,3 +2,5 @@
 obj/
 bin/
 *.user
+.deps/
+Dancy-*.zip

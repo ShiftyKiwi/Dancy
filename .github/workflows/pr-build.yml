@@ -1,4 +1,4 @@
-name: Sample PR Builder for SamplePlugin
+name: PR Build
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-2022
 
     env:
-      Solution_Name: SamplePlugin
+      Solution_Name: Dancy
 
     steps:
     - name: Checkout
@@ -19,12 +19,22 @@ jobs:
     - name: Install .NET
       uses: actions/setup-dotnet@v5
       with:
-        dotnet-version: 9.0.x
+        dotnet-version: 10.0.x
 
     - name: Download Dalamud
       run: |
         Invoke-WebRequest -Uri https://goatcorp.github.io/dalamud-distrib/latest.zip -OutFile latest.zip
         Expand-Archive -Force latest.zip "$env:AppData\XIVLauncher\addon\Hooks\dev"
+
+    - name: Download VFXEditor dependency
+      run: |
+        New-Item -ItemType Directory -Force .\lib | Out-Null
+        gh release download --repo 0ceal0t/Dalamud-VFXEditor -p VFXEditor-Beta.zip -D .
+        Expand-Archive -Force .\VFXEditor-Beta.zip .\_vfxeditor
+        Copy-Item .\_vfxeditor\VFXEditor-Beta.dll .\lib\VFXEditor-Beta.dll -Force
+        Copy-Item .\_vfxeditor\Penumbra.String.dll .\lib\Penumbra.String.dll -Force
+      env:
+        GH_TOKEN: ${{ github.token }}
 
     - name: Build with dotnet
       run: dotnet build --configuration Release
@@ -32,8 +42,8 @@ jobs:
     - name: Store artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: SamplePlugin
-        path: .\SamplePlugin\bin\x64\Release\SamplePlugin\*
+        name: Dancy
+        path: .\Dancy\bin\x64\Release\Dancy\*
         if-no-files-found: error
         retention-days: 1
 

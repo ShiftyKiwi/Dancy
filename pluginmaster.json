@@ -1,15 +1,16 @@
-{
+[
+  {
     "Author": "kcuY",
     "Name": "Dancy",
     "Punchline": "Change Emotes in Penumbra Mods.",
     "Description": "Change Emotes in Penumbra Mods.",
     "Tags": [
-        "animation",
-        "anims",
-        "mods",
-        "dance",
-        "penumbra",
-        "emotes"
+      "animation",
+      "anims",
+      "mods",
+      "dance",
+      "penumbra",
+      "emotes"
     ],
     "InternalName": "Dancy",
     "AssemblyVersion": "0.1.1.0",
@@ -18,11 +19,12 @@
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "TestingDalamudApiLevel": 15,
-    "IsHide": "False",
-    "IsTestingExclusive": "False",
+    "IsHide": false,
+    "IsTestingExclusive": false,
     "LastUpdate": 1777926867,
     "DownloadLinkInstall": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
     "DownloadLinkUpdate": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
     "DownloadLinkTesting": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
     "IconUrl": "https://raw.githubusercontent.com/ShiftyKiwi/Dancy/master/dancy.png"
-}
+  }
+]
