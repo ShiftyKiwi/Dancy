@@ -1,186 +1,245 @@
 using ECommons.DalamudServices;
-using Microsoft.VisualBasic;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Threading.Tasks;
-using VfxEditor.PapFormat;
-using VfxEditor.Parsing.String;
-using VfxEditor.ScdFormat;
+using VfxEditor.TmbFormat;
 using VfxEditor.TmbFormat.Entries;
 
 namespace Dancy.Pap;
+
 public static class PapEditor
 {
-    public struct LoadedPap
-    {
-        public PapFile File;
-        public string TempHkxPath;
-    }
+    private const int PapMagic = 0x20706170;
+    private const int PapInfoOffsetPosition = 14;
+    private const int PapHavokOffsetPosition = 18;
+    private const int PapTimelineOffsetPosition = 22;
+    private const int PapHeaderSize = 26;
+    private const int PapAnimationHeaderSize = 40;
+    private const int PapAnimationNameSize = 32;
 
-    public static LoadedPap LoadPap(string path)
-    {
-        var random = new Random();
-        int rand = random.Next(9999);
-        int rand2 = random.Next(9999);
-
-        try
-        {
-            string hkxTemp = Path.Combine(Path.GetTempPath(), $"{rand}_{rand2}" + ".hkx");
-            PapFile result;
-            using (var fs = File.OpenRead(path))
-            using (var br = new BinaryReader(fs))
-            {
-                // init = true: Havok-Daten werden normal gelesen
-                result = new PapFile(br, path, hkxTemp, true, true);
-            }
-            // The temp HKX file is required later when the PapFile is
-            // written back to disk. Deleting it here caused a
-            // FileNotFoundException during the write step if a PAP was
-            // created for an animation that previously had no sound.
-            // Cleanup is handled separately by TempFileCleaner, so we
-            // keep the file around for now.
-            return new LoadedPap { File = result, TempHkxPath = hkxTemp };
-        }
-        catch (Exception ex)
-        {
-            throw ex;
-        }
-
-    }
     public static void ApplyOverride(string defaultPath, string papPath, string newPap)
     {
-
-        var random = new Random();
-        int rand = random.Next(9999);
-        int rand2 = random.Next(9999);
-        string hkxTemp = string.Empty;
-
-        bool changedSomething = false;
-
-        string eventIdentifier = string.Empty;
-
         try
         {
-            var tempFile = Plugin.DataManager.GetFile(defaultPath);
-            if (tempFile == null)
+            var defaultFile = Plugin.DataManager.GetFile(defaultPath);
+            if (defaultFile == null)
                 throw new FileNotFoundException($"File {defaultPath} not found in game data.");
 
-            hkxTemp = Path.Combine(Path.GetTempPath(), $"{rand}_{rand2}" + ".hkx");
-            PapFile file;
-            using (var br = new BinaryReader(tempFile.Reader.BaseStream))
+            var defaultBytes = ReadAllBytes(defaultFile.Reader.BaseStream);
+            var eventIdentifier = ReadPapAnimationName(defaultBytes, 0);
+            if (string.IsNullOrWhiteSpace(eventIdentifier))
             {
-                // init = true: Havok-Daten werden normal gelesen
-                file = new PapFile(br, defaultPath, hkxTemp, true, true);
+                eventIdentifier = Path.GetFileNameWithoutExtension(NormalizeGamePath(defaultPath));
+                if (string.IsNullOrWhiteSpace(eventIdentifier))
+                    throw new InvalidDataException($"Could not infer animation name from {defaultPath}.");
 
-                eventIdentifier = file.Animations[0].GetName();
-            }
-        }
-        catch (Exception ex)
-        {
-            Svc.Chat.PrintError($"Failed to load default PAP file: {ex.Message}");
-        }
-        finally
-        {
-            if (File.Exists(hkxTemp))
-            {
-                File.Delete(hkxTemp);
-            }
-        }
-
-        try
-        {
-            hkxTemp = Path.Combine(Path.GetTempPath(), $"{rand}_{rand2}" + ".hkx");
-            PapFile file;
-
-            using (var fs = File.OpenRead(papPath))
-            using (var br = new BinaryReader(fs))
-            {
-                // defaultPath: der Ingame-Pfad, den du vorher für eventIdentifier benutzt hast
-                file = new PapFile(br, defaultPath, hkxTemp, true, true);
-
-                var actors = file.Animations[0].Tmb.Actors;
-
-                foreach (var actor in actors)
-                {
-                    foreach (var track in actor.Tracks)
-                    {
-                        var animTimeline = track.Entries.OfType<C009>().FirstOrDefault();
-                        if (animTimeline == null) continue;
-
-                        var pathField = typeof(C009).GetField("Path",
-                            BindingFlags.Instance | BindingFlags.NonPublic);
-                        var pathObj = pathField?.GetValue(animTimeline) as VfxEditor.TmbFormat.TmbOffsetString;
-                        if (pathObj == null) continue;
-
-                        // TMB-Animation-Path umbiegen
-                        pathObj.Value = eventIdentifier; // oder timelineKey
-                        changedSomething = true;
-                    }
-                }
-
-                // PapAnimation.Name umbiegen
-                if (file.Animations.Count > 0)
-                {
-                    var anim = file.Animations[0];
-
-                    var nameField = typeof(PapAnimation).GetField("Name",
-                        BindingFlags.Instance | BindingFlags.NonPublic);
-                    var nameObj = nameField?.GetValue(anim) as ParsedPaddedString;
-
-                    if (nameObj != null)
-                    {
-                        nameObj.Value = eventIdentifier; // oder timelineKey
-                        changedSomething = true;
-                    }
-                    else
-                    {
-                        Svc.Chat.PrintError("[Dancy] Could not access PapAnimation.Name via reflection.");
-                    }
-                }
+                Svc.Log.Warning($"[Dancy] Could not read animation name from {defaultPath}; using {eventIdentifier}.");
             }
 
-            if (changedSomething)
-            {
-                using (var fsOut = File.Create(newPap)) // oder newPap, je nachdem wo deine Kopie liegt
-                using (var bw = new BinaryWriter(fsOut))
-                {
-                    file.Write(bw);
-                }
-            }
+            var sourceBytes = File.ReadAllBytes(papPath);
+            var patchedBytes = PatchPap(sourceBytes, eventIdentifier);
+
+            Directory.CreateDirectory(Path.GetDirectoryName(newPap)!);
+            File.WriteAllBytes(newPap, patchedBytes);
         }
         catch (Exception ex)
         {
             Svc.Chat.PrintError($"Failed to load/modify PAP file: {ex.Message}");
+            Svc.Log.Error(ex, $"[Dancy] Failed to patch PAP. Default={defaultPath}, Source={papPath}, Output={newPap}");
+        }
+    }
+
+    private static byte[] ReadAllBytes(Stream stream)
+    {
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    private static byte[] PatchPap(byte[] papBytes, string eventIdentifier)
+    {
+        ValidatePapMagic(papBytes);
+
+        var animationCount = ReadAnimationCount(papBytes);
+        if (animationCount <= 0)
+            throw new InvalidDataException("PAP contains no animations.");
+
+        var animationHeaderOffset = ReadInt32(papBytes, PapInfoOffsetPosition);
+        var originalHkxOffset = ReadInt32(papBytes, PapHavokOffsetPosition);
+        var originalTmbOffset = ReadInt32(papBytes, PapTimelineOffsetPosition);
+        if (animationHeaderOffset <= 0 || originalHkxOffset <= animationHeaderOffset || originalTmbOffset <= originalHkxOffset)
+            throw new InvalidDataException("PAP header offsets are invalid.");
+
+        var animationHeaders = ReadAnimationHeaders(papBytes, animationHeaderOffset, animationCount);
+        WritePaddedString(animationHeaders[0], 0, PapAnimationNameSize, eventIdentifier);
+
+        var hkxData = new byte[originalTmbOffset - originalHkxOffset];
+        Buffer.BlockCopy(papBytes, originalHkxOffset, hkxData, 0, hkxData.Length);
+
+        var tmbOffsetMod = originalTmbOffset % 4;
+        var tmbSections = ReadTmbSections(papBytes, originalTmbOffset, animationCount, tmbOffsetMod);
+        tmbSections[0] = PatchTmb(tmbSections[0], eventIdentifier);
+
+        using var output = new MemoryStream();
+        using var writer = new BinaryWriter(output);
+
+        writer.Write(papBytes, 0, PapInfoOffsetPosition);
+
+        var newAnimationHeaderOffset = PapHeaderSize;
+        var newHkxOffset = newAnimationHeaderOffset + animationHeaders.Sum(h => h.Length);
+        var newTmbOffset = newHkxOffset + hkxData.Length;
+        writer.Write(newAnimationHeaderOffset);
+        writer.Write(newHkxOffset);
+        writer.Write(newTmbOffset);
+
+        foreach (var header in animationHeaders)
+            writer.Write(header);
+
+        writer.Write(hkxData);
+
+        for (var i = 0; i < tmbSections.Count; i++)
+        {
+            writer.Write(tmbSections[i]);
+            WritePadding(writer, Padding(output.Position, i, tmbSections.Count, tmbOffsetMod));
+        }
+
+        return output.ToArray();
+    }
+
+    private static List<byte[]> ReadAnimationHeaders(byte[] papBytes, int animationHeaderOffset, int animationCount)
+    {
+        var headers = new List<byte[]>(animationCount);
+        for (var i = 0; i < animationCount; i++)
+        {
+            var sourceOffset = animationHeaderOffset + i * PapAnimationHeaderSize;
+            if (sourceOffset < 0 || sourceOffset + PapAnimationHeaderSize > papBytes.Length)
+                throw new InvalidDataException("PAP animation header is outside the file.");
+
+            var header = new byte[PapAnimationHeaderSize];
+            Buffer.BlockCopy(papBytes, sourceOffset, header, 0, PapAnimationHeaderSize);
+            headers.Add(header);
+        }
+
+        return headers;
+    }
+
+    private static List<byte[]> ReadTmbSections(byte[] papBytes, int tmbOffset, int animationCount, int customOffset)
+    {
+        var sections = new List<byte[]>(animationCount);
+        var position = tmbOffset;
+
+        for (var i = 0; i < animationCount; i++)
+        {
+            if (position + 8 > papBytes.Length)
+                throw new InvalidDataException("TMB section is outside the PAP file.");
+
+            var size = ReadInt32(papBytes, position + 4);
+            if (size <= 0 || position + size > papBytes.Length)
+                throw new InvalidDataException("TMB section size is invalid.");
+
+            var section = new byte[size];
+            Buffer.BlockCopy(papBytes, position, section, 0, size);
+            sections.Add(section);
+
+            position += size;
+            position += Padding(position, i, animationCount, customOffset);
+        }
+
+        return sections;
+    }
+
+    private static byte[] PatchTmb(byte[] tmbBytes, string eventIdentifier)
+    {
+        using var input = new MemoryStream(tmbBytes);
+        using var reader = new BinaryReader(input);
+        var tmb = new TmbFile(reader, null!, verify: false);
+        try
+        {
+            var changed = false;
+            var pathField = typeof(C009).GetField("Path", BindingFlags.Instance | BindingFlags.NonPublic);
+            foreach (var entry in tmb.AllEntries.OfType<C009>())
+            {
+                if (pathField?.GetValue(entry) is not TmbOffsetString pathObj)
+                    continue;
+
+                pathObj.Value = eventIdentifier;
+                changed = true;
+            }
+
+            if (!changed)
+                throw new InvalidDataException("No C009 animation timeline entries found in source PAP.");
+
+            using var output = new MemoryStream();
+            using var writer = new BinaryWriter(output);
+            tmb.Write(writer);
+            return output.ToArray();
         }
         finally
         {
-            if (File.Exists(hkxTemp))
-            {
-                File.Delete(hkxTemp);
-            }
+            tmb.Dispose();
         }
-
-
     }
 
-    private static LoadedPap LoadPapOnMainThread(string path)
+    private static short ReadAnimationCount(byte[] papBytes)
+        => BitConverter.ToInt16(papBytes, 8);
+
+    private static string ReadPapAnimationName(byte[] papBytes, int animationIndex)
     {
-        var tcs = new TaskCompletionSource<LoadedPap>();
-        Svc.Framework?.RunOnFrameworkThread(() =>
-        {
-            try
-            {
-                tcs.SetResult(LoadPap(path));
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-        });
-        return tcs.Task.GetAwaiter().GetResult();
+        if (!HasPapMagic(papBytes))
+            return string.Empty;
+
+        var animationHeaderOffset = ReadInt32(papBytes, PapInfoOffsetPosition);
+        var nameOffset = animationHeaderOffset + animationIndex * PapAnimationHeaderSize;
+        if (nameOffset < 0 || nameOffset + PapAnimationNameSize > papBytes.Length)
+            return string.Empty;
+
+        var length = 0;
+        while (length < PapAnimationNameSize && papBytes[nameOffset + length] != 0)
+            length++;
+
+        return Encoding.UTF8.GetString(papBytes, nameOffset, length);
+    }
+
+    private static int ReadInt32(byte[] bytes, int offset)
+        => BitConverter.ToInt32(bytes, offset);
+
+    private static bool HasPapMagic(byte[] bytes)
+        => bytes.Length >= 4 && ReadInt32(bytes, 0) == PapMagic;
+
+    private static void ValidatePapMagic(byte[] bytes)
+    {
+        if (!HasPapMagic(bytes))
+            throw new InvalidDataException("PAP magic is invalid.");
+    }
+
+    private static string NormalizeGamePath(string path)
+        => path.Replace('\\', '/');
+
+    private static void WritePaddedString(byte[] bytes, int offset, int length, string value)
+    {
+        var valueBytes = Encoding.UTF8.GetBytes(value);
+        if (valueBytes.Length >= length)
+            throw new InvalidDataException($"Animation name {value} is too long for a PAP animation header.");
+
+        Array.Clear(bytes, offset, length);
+        Buffer.BlockCopy(valueBytes, 0, bytes, offset, valueBytes.Length);
+    }
+
+    private static int Padding(long position, int itemIdx, int numItems, int customOffset)
+    {
+        if (numItems <= 1 || itemIdx >= numItems - 1)
+            return 0;
+
+        var remainder = (position - customOffset) % 4;
+        return (int)(remainder == 0 ? 0 : 4 - remainder);
+    }
+
+    private static void WritePadding(BinaryWriter writer, int count)
+    {
+        for (var i = 0; i < count; i++)
+            writer.Write((byte)0);
     }
 }

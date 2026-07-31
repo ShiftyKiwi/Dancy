@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using ECommons.ChatMethods;
 using ECommons.DalamudServices;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Dancy.Files
 {
@@ -125,10 +126,15 @@ namespace Dancy.Files
         {
             if (string.IsNullOrWhiteSpace(modPath) || !Directory.Exists(modPath))
                 return false;
+
+            if (TryReadMeta(modPath, out var meta)
+                && meta["Groups"] is JArray groups
+                && groups.OfType<JObject>().Any(IsDancyGroup))
+                return true;
             
             bool dancyGroupFound = Directory.GetFiles(modPath, "group_*.json", SearchOption.TopDirectoryOnly)
                 .Any(f => Path.GetFileNameWithoutExtension(f)
-                    .Contains("yuck's dancy", StringComparison.OrdinalIgnoreCase));
+                    .Contains("yucksdancy", StringComparison.OrdinalIgnoreCase));
 
             bool directoryFound = Directory.GetDirectories(modPath, "yucksdancy", SearchOption.TopDirectoryOnly)
                 .Any();
@@ -143,10 +149,35 @@ namespace Dancy.Files
                 return false;
 
             bool anyDeleted = false;
+            var metaPath = Path.Combine(modPath, "meta.json");
+            if (TryReadMeta(modPath, out var meta) && meta["Groups"] is JArray groups)
+            {
+                var dancyGroups = groups
+                    .OfType<JObject>()
+                    .Where(IsDancyGroup)
+                    .ToList();
+
+                foreach (var group in dancyGroups)
+                    group.Remove();
+
+                if (dancyGroups.Count > 0)
+                {
+                    try
+                    {
+                        File.WriteAllText(metaPath, meta.ToString(Formatting.Indented));
+                        anyDeleted = true;
+                    }
+                    catch
+                    {
+                        // Ignorieren
+                    }
+                }
+            }
+
             // 1) group_*.json Dateien mit "dancy" im Namen löschen
             var groupFiles = Directory.GetFiles(modPath, "group_*.json", SearchOption.TopDirectoryOnly)
                 .Where(f => Path.GetFileNameWithoutExtension(f)
-                    .Contains("yuck\'s dancy", StringComparison.OrdinalIgnoreCase))
+                    .Contains("yucksdancy", StringComparison.OrdinalIgnoreCase))
                 .ToList();
             foreach (var file in groupFiles)
             {
@@ -176,6 +207,24 @@ namespace Dancy.Files
             }
             return anyDeleted;
         }
+
+        private static bool TryReadMeta(string modPath, out JObject meta)
+        {
+            var metaPath = Path.Combine(modPath, "meta.json");
+            try
+            {
+                meta = JObject.Parse(File.ReadAllText(metaPath));
+                return true;
+            }
+            catch
+            {
+                meta = new JObject();
+                return false;
+            }
+        }
+
+        private static bool IsDancyGroup(JObject group)
+            => string.Equals(group["Name"]?.ToString(), "Yuck's Dancy", StringComparison.OrdinalIgnoreCase);
     }
 
 }

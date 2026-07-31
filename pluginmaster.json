@@ -13,18 +13,18 @@
       "emotes"
     ],
     "InternalName": "Dancy",
-    "AssemblyVersion": "0.1.1.0",
-    "TestingAssemblyVersion": "0.1.1.0",
+    "AssemblyVersion": "0.1.2.0",
+    "TestingAssemblyVersion": "0.1.2.0",
     "RepoUrl": "https://github.com/ShiftyKiwi/Dancy",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "TestingDalamudApiLevel": 15,
     "IsHide": false,
     "IsTestingExclusive": false,
-    "LastUpdate": 1777926867,
-    "DownloadLinkInstall": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
-    "DownloadLinkUpdate": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
-    "DownloadLinkTesting": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.1/Dancy-0.1.1.zip",
+    "LastUpdate": 1785495690,
+    "DownloadLinkInstall": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.2/Dancy-0.1.2.zip",
+    "DownloadLinkUpdate": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.2/Dancy-0.1.2.zip",
+    "DownloadLinkTesting": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.1.2/Dancy-0.1.2.zip",
     "IconUrl": "https://raw.githubusercontent.com/ShiftyKiwi/Dancy/master/dancy.png"
   }
 ]

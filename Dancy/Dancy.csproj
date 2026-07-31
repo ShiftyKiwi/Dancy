@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.1.1</Version>
+    <Version>0.1.2</Version>
     <Description>Change emotes in Penumbra mods.</Description>
     <PackageProjectUrl>https://github.com/ShiftyKiwi/Dancy</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
@@ -10,16 +10,22 @@
 
   <ItemGroup>
     <Content Include="Dancy.json" />
+    <Content Include="..\lib\VFXEditor-Beta.dll" Link="VFXEditor.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ECommons" Version="3.1.0.15" />
     <PackageReference Include="Penumbra.Api" Version="5.12.0" />
+    <PackageReference Include="SharpDX" Version="4.2.0" />
+    <PackageReference Include="SharpDX.D3DCompiler" Version="4.2.0" />
+    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
+    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="VFXEditor">
       <HintPath>..\lib\VFXEditor-Beta.dll</HintPath>
+      <Private>false</Private>
     </Reference>
     <Reference Include="Penumbra.String">
       <HintPath>..\lib\Penumbra.String.dll</HintPath>
