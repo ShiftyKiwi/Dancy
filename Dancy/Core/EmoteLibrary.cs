@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dancy.Core.Models;
+using Dancy.Domain;
 using Lumina.Excel.Sheets;
 
 namespace Dancy.Core
@@ -13,6 +14,9 @@ namespace Dancy.Core
     public static class EmoteLibrary
     {
         public static List<LuminaEmote> AllEmotes { get; private set; } = new();
+        public static List<LuminaEmote> LoopingEmotes { get; private set; } = new();
+
+        private static readonly Dictionary<string, ResolvedEmoteInfo> EmotesByTimeline = new(StringComparer.OrdinalIgnoreCase);
 
         private static bool _initialized;
 
@@ -39,30 +43,35 @@ namespace Dancy.Core
                 if (string.IsNullOrWhiteSpace(command))
                     continue;
 
-                // Try to find a loop timeline first.
-                string primaryTimelineKey = string.Empty;
+                var timelineKeys = emote.ActionTimeline
+                    .Where(t => t.ValueNullable != null)
+                    .Select(t => t.Value.Key.ToString())
+                    .Where(key => !string.IsNullOrWhiteSpace(key))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
 
-                var loopTimeline = emote.ActionTimeline
-                    .FirstOrDefault(t =>
-                        t.ValueNullable != null &&
-                        t.Value.Key.ToString().Contains("loop", StringComparison.OrdinalIgnoreCase));
+                if (timelineKeys.Count == 0)
+                    continue;
 
-                if (loopTimeline.ValueNullable != null)
-                {
-                    primaryTimelineKey = loopTimeline.Value.Key.ToString();
-                }
-                else
-                {
-                    // Fallback: any valid timeline key.
-                    var anyTimeline = emote.ActionTimeline
-                        .FirstOrDefault(t => t.ValueNullable != null);
-
-                    if (anyTimeline.ValueNullable != null)
-                        primaryTimelineKey = anyTimeline.Value.Key.ToString();
-                }
+                var loopTimelineKey = timelineKeys.FirstOrDefault(key =>
+                    GamePathIdentity.Parse(key).Phase == AnimationPhase.Loop);
+                var primaryTimelineKey = loopTimelineKey ?? timelineKeys[0];
 
                 string category = emote.EmoteCategory.ValueNullable?.Name.ExtractText()
                                   ?? "Unknown";
+
+                var resolved = new ResolvedEmoteInfo
+                {
+                    Name = name,
+                    Command = command,
+                    RowId = emote.RowId,
+                };
+                foreach (var timelineKey in timelineKeys)
+                {
+                    var filename = System.IO.Path.GetFileNameWithoutExtension(timelineKey);
+                    if (!string.IsNullOrWhiteSpace(filename))
+                        EmotesByTimeline.TryAdd(filename, resolved);
+                }
 
                 list.Add(new LuminaEmote
                 {
@@ -70,6 +79,9 @@ namespace Dancy.Core
                     Command = command,
                     RowId = emote.RowId,
                     PrimaryTimelineKey = primaryTimelineKey,
+                    TimelineKeys = timelineKeys,
+                    IsLoopCapable = loopTimelineKey != null,
+                    PrimaryPhase = GamePathIdentity.Parse(primaryTimelineKey).Phase,
                     Category = category,
                 });
             }
@@ -77,8 +89,18 @@ namespace Dancy.Core
             AllEmotes = list
                 .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            LoopingEmotes = AllEmotes.Where(e => e.IsLoopCapable).ToList();
 
             _initialized = true;
+        }
+
+        public static ResolvedEmoteInfo? ResolveTimeline(string gamePath)
+        {
+            var filename = System.IO.Path.GetFileNameWithoutExtension(gamePath);
+            return !string.IsNullOrWhiteSpace(filename)
+                   && EmotesByTimeline.TryGetValue(filename, out var emote)
+                ? emote
+                : null;
         }
     }
 }

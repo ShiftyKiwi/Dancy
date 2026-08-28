@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Dancy\Domain\**\*.cs" Link="Domain\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Dancy\Penumbra\DancyMetadataMutator.cs" Link="Penumbra\DancyMetadataMutator.cs" />
+    <Compile Include="..\Dancy\Penumbra\PenumbraGroupWriter.cs" Link="Penumbra\PenumbraGroupWriter.cs" />
+    <Compile Include="..\Dancy\Penumbra\PenumbraMetadataScanner.cs" Link="Penumbra\PenumbraMetadataScanner.cs" />
+    <Compile Include="..\Dancy\Persistence\AtomicJsonFile.cs" Link="Persistence\AtomicJsonFile.cs" />
+    <Compile Include="..\Dancy\Persistence\PathSafety.cs" Link="Persistence\PathSafety.cs" />
+    <Compile Include="..\Dancy\Pap\PapFileInspector.cs" Link="Pap\PapFileInspector.cs" />
+    <Compile Include="..\Dancy\Services\PenumbraReloadResult.cs" Link="Services\PenumbraReloadResult.cs" />
+    <Compile Include="..\Dancy\Models\ParsedEmoteOverride.cs" Link="Models\ParsedEmoteOverride.cs" />
+  </ItemGroup>
+</Project>

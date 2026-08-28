@@ -5,6 +5,8 @@ VisualStudioVersion = 17.14.36408.4
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dancy", "Dancy\Dancy.csproj", "{271E505A-45A7-047E-9353-E1FEF16AA01E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Dancy.Tests", "Dancy.Tests\Dancy.Tests.csproj", "{A6BC476A-478B-4A51-AD2E-2B411FF57F6A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -15,6 +17,10 @@ Global
 		{271E505A-45A7-047E-9353-E1FEF16AA01E}.Debug|x64.Build.0 = Debug|x64
 		{271E505A-45A7-047E-9353-E1FEF16AA01E}.Release|x64.ActiveCfg = Release|x64
 		{271E505A-45A7-047E-9353-E1FEF16AA01E}.Release|x64.Build.0 = Release|x64
+		{A6BC476A-478B-4A51-AD2E-2B411FF57F6A}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{A6BC476A-478B-4A51-AD2E-2B411FF57F6A}.Debug|x64.Build.0 = Debug|Any CPU
+		{A6BC476A-478B-4A51-AD2E-2B411FF57F6A}.Release|x64.ActiveCfg = Release|Any CPU
+		{A6BC476A-478B-4A51-AD2E-2B411FF57F6A}.Release|x64.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

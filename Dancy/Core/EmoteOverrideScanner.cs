@@ -1,4 +1,5 @@
 using Dancy.Core.Models;
+using Dancy.Penumbra;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
@@ -92,7 +93,6 @@ public static class EmoteOverrideScanner
                     OptionName = optionName,
                     Entries = entries,
                     PapSources = papGroups,
-                    IsSafeToRemap = true // nur noch UI Hint
                 });
             }
         }
@@ -116,41 +116,17 @@ public static class EmoteOverrideScanner
 
     private static void ScanMetaJson(JObject meta, List<RemappableOption> results)
     {
-        var modName = meta["Name"]?.ToString() ?? "Mod";
-
-        AddOptionFromFiles(
-            results,
-            modName,
-            "(default)",
-            meta["DefaultData"]?["Files"] as JObject);
-
-        if (meta["Groups"] is not JArray groups)
-            return;
-
-        foreach (var groupToken in groups.OfType<JObject>())
+        foreach (var optionGroup in PenumbraMetadataScanner.ScanV4(meta)
+                     .GroupBy(mapping => (mapping.GroupName, mapping.OptionName)))
         {
-            var groupName = groupToken["Name"]?.ToString() ?? "Group";
-
-            if (groupToken["Options"] is JArray options)
+            var entries = new List<ParsedEmoteOverride>();
+            foreach (var mapping in optionGroup)
             {
-                foreach (var optionToken in options.OfType<JObject>())
-                {
-                    var optionName = optionToken["Name"]?.ToString() ?? "Option";
-                    AddOptionFromFiles(results, groupName, optionName, optionToken["Files"] as JObject);
-                }
+                if (TryCreateParsedEntry(optionGroup.Key.GroupName, optionGroup.Key.OptionName, mapping.GamePath, mapping.ModPath, out var entry))
+                    entries.Add(entry);
             }
 
-            if (groupToken["Containers"] is not JArray containers)
-                continue;
-
-            foreach (var containerToken in containers.OfType<JObject>().Select((Token, Index) => (Token, Index)))
-            {
-                var optionName = containerToken.Token["Name"]?.ToString();
-                if (string.IsNullOrWhiteSpace(optionName))
-                    optionName = $"Container {containerToken.Index + 1}";
-
-                AddOptionFromFiles(results, groupName, optionName, containerToken.Token["Files"] as JObject);
-            }
+            AddRemappableOption(results, optionGroup.Key.GroupName, optionGroup.Key.OptionName, entries);
         }
     }
 
@@ -176,6 +152,15 @@ public static class EmoteOverrideScanner
             entries.Add(entry);
         }
 
+        AddRemappableOption(results, groupName, optionName, entries);
+    }
+
+    private static void AddRemappableOption(
+        List<RemappableOption> results,
+        string groupName,
+        string optionName,
+        List<ParsedEmoteOverride> entries)
+    {
         if (entries.Count == 0)
             return;
 
@@ -194,7 +179,6 @@ public static class EmoteOverrideScanner
             OptionName = optionName,
             Entries = entries,
             PapSources = papGroups,
-            IsSafeToRemap = true
         });
     }
 

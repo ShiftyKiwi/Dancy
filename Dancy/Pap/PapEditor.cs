@@ -20,58 +20,75 @@ public static class PapEditor
     private const int PapAnimationHeaderSize = 40;
     private const int PapAnimationNameSize = 32;
 
-    public static void ApplyOverride(string defaultPath, string papPath, string newPap)
+    public sealed class PapPatchResult
     {
-        try
+        public string TargetGamePath { get; init; } = string.Empty;
+        public string EventIdentifier { get; init; } = string.Empty;
+        public int AnimationCount { get; init; }
+        public int PatchedTimelineEntries { get; init; }
+        public long OutputLength { get; init; }
+        public PapFileInspector.PapFileInspection OutputInspection { get; init; } = new();
+    }
+
+    public static PapPatchResult ApplyOverride(string defaultPath, string papPath, string newPap)
+    {
+        var eventIdentifier = ReadTargetEventIdentifier(defaultPath);
+        var sourceBytes = File.ReadAllBytes(papPath);
+        var patched = PatchPap(sourceBytes, eventIdentifier);
+        var inspection = PapFileInspector.Inspect(patched.Bytes);
+
+        var outputDirectory = Path.GetDirectoryName(newPap);
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+            throw new InvalidOperationException("The generated PAP path has no parent directory.");
+
+        Directory.CreateDirectory(outputDirectory);
+        File.WriteAllBytes(newPap, patched.Bytes);
+        var outputLength = new FileInfo(newPap).Length;
+        if (outputLength == 0)
+            throw new InvalidDataException("The generated PAP file is empty.");
+
+        return new PapPatchResult
         {
-            var defaultFile = Plugin.DataManager.GetFile(defaultPath);
-            if (defaultFile == null)
-                throw new FileNotFoundException($"File {defaultPath} not found in game data.");
+            TargetGamePath = defaultPath,
+            EventIdentifier = eventIdentifier,
+            AnimationCount = patched.AnimationCount,
+            PatchedTimelineEntries = patched.PatchedTimelineEntries,
+            OutputLength = outputLength,
+            OutputInspection = inspection,
+        };
+    }
 
-            var defaultBytes = ReadAllBytes(defaultFile.Reader.BaseStream);
-            var eventIdentifier = ReadPapAnimationName(defaultBytes, 0);
-            if (string.IsNullOrWhiteSpace(eventIdentifier))
-            {
-                eventIdentifier = Path.GetFileNameWithoutExtension(NormalizeGamePath(defaultPath));
-                if (string.IsNullOrWhiteSpace(eventIdentifier))
-                    throw new InvalidDataException($"Could not infer animation name from {defaultPath}.");
+    public static string ReadTargetEventIdentifier(string defaultPath)
+    {
+        var defaultFile = Plugin.DataManager.GetFile(defaultPath);
+        if (defaultFile == null)
+            throw new FileNotFoundException($"File {defaultPath} was not found in game data.");
 
-                Svc.Log.Warning($"[Dancy] Could not read animation name from {defaultPath}; using {eventIdentifier}.");
-            }
-
-            var sourceBytes = File.ReadAllBytes(papPath);
-            var patchedBytes = PatchPap(sourceBytes, eventIdentifier);
-
-            Directory.CreateDirectory(Path.GetDirectoryName(newPap)!);
-            File.WriteAllBytes(newPap, patchedBytes);
-        }
-        catch (Exception ex)
-        {
-            Svc.Chat.PrintError($"Failed to load/modify PAP file: {ex.Message}");
-            Svc.Log.Error(ex, $"[Dancy] Failed to patch PAP. Default={defaultPath}, Source={papPath}, Output={newPap}");
-        }
+        var defaultBytes = ReadAllBytes(defaultFile.Reader.BaseStream);
+        var inspection = PapFileInspector.Inspect(defaultBytes);
+        var eventIdentifier = inspection.AnimationNames.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(eventIdentifier))
+            throw new InvalidDataException($"Could not read an animation name from {defaultPath}.");
+        return eventIdentifier;
     }
 
     private static byte[] ReadAllBytes(Stream stream)
     {
+        if (stream.CanSeek)
+            stream.Position = 0;
+
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
         return ms.ToArray();
     }
 
-    private static byte[] PatchPap(byte[] papBytes, string eventIdentifier)
+    private static (byte[] Bytes, int AnimationCount, int PatchedTimelineEntries) PatchPap(byte[] papBytes, string eventIdentifier)
     {
-        ValidatePapMagic(papBytes);
-
-        var animationCount = ReadAnimationCount(papBytes);
-        if (animationCount <= 0)
-            throw new InvalidDataException("PAP contains no animations.");
-
-        var animationHeaderOffset = ReadInt32(papBytes, PapInfoOffsetPosition);
-        var originalHkxOffset = ReadInt32(papBytes, PapHavokOffsetPosition);
-        var originalTmbOffset = ReadInt32(papBytes, PapTimelineOffsetPosition);
-        if (animationHeaderOffset <= 0 || originalHkxOffset <= animationHeaderOffset || originalTmbOffset <= originalHkxOffset)
-            throw new InvalidDataException("PAP header offsets are invalid.");
+        var sourceInspection = PapFileInspector.Inspect(papBytes);
+        var animationCount = sourceInspection.AnimationCount;
+        var animationHeaderOffset = sourceInspection.AnimationHeaderOffset;
+        var originalHkxOffset = sourceInspection.HavokOffset;
+        var originalTmbOffset = sourceInspection.TimelineOffset;
 
         var animationHeaders = ReadAnimationHeaders(papBytes, animationHeaderOffset, animationCount);
         WritePaddedString(animationHeaders[0], 0, PapAnimationNameSize, eventIdentifier);
@@ -81,7 +98,8 @@ public static class PapEditor
 
         var tmbOffsetMod = originalTmbOffset % 4;
         var tmbSections = ReadTmbSections(papBytes, originalTmbOffset, animationCount, tmbOffsetMod);
-        tmbSections[0] = PatchTmb(tmbSections[0], eventIdentifier);
+        var patchedTmb = PatchTmb(tmbSections[0], eventIdentifier);
+        tmbSections[0] = patchedTmb.Bytes;
 
         using var output = new MemoryStream();
         using var writer = new BinaryWriter(output);
@@ -106,7 +124,7 @@ public static class PapEditor
             WritePadding(writer, Padding(output.Position, i, tmbSections.Count, tmbOffsetMod));
         }
 
-        return output.ToArray();
+        return (output.ToArray(), animationCount, patchedTmb.PatchedEntries);
     }
 
     private static List<byte[]> ReadAnimationHeaders(byte[] papBytes, int animationHeaderOffset, int animationCount)
@@ -151,7 +169,7 @@ public static class PapEditor
         return sections;
     }
 
-    private static byte[] PatchTmb(byte[] tmbBytes, string eventIdentifier)
+    private static (byte[] Bytes, int PatchedEntries) PatchTmb(byte[] tmbBytes, string eventIdentifier)
     {
         using var input = new MemoryStream(tmbBytes);
         using var reader = new BinaryReader(input);
@@ -175,7 +193,7 @@ public static class PapEditor
             using var output = new MemoryStream();
             using var writer = new BinaryWriter(output);
             tmb.Write(writer);
-            return output.ToArray();
+            return (output.ToArray(), tmb.AllEntries.OfType<C009>().Count());
         }
         finally
         {
@@ -213,6 +231,11 @@ public static class PapEditor
     {
         if (!HasPapMagic(bytes))
             throw new InvalidDataException("PAP magic is invalid.");
+    }
+
+    private static void ValidatePatchedPap(byte[] bytes)
+    {
+        _ = PapFileInspector.Inspect(bytes);
     }
 
     private static string NormalizeGamePath(string path)

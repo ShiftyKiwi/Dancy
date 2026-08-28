@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using Dancy.Domain;
+
 namespace Dancy.Core.Models
 {
     /// <summary>
@@ -25,6 +28,12 @@ namespace Dancy.Core.Models
         /// usually something like "emote/dance16_loop".
         /// </summary>
         public string PrimaryTimelineKey { get; set; } = string.Empty;
+
+        public List<string> TimelineKeys { get; set; } = new();
+
+        public bool IsLoopCapable { get; set; }
+
+        public AnimationPhase PrimaryPhase { get; set; }
 
         /// <summary>
         /// Optional: Emote category name (General, Special, etc.).

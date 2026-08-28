@@ -1,3 +1,5 @@
+using Dancy.Domain;
+
 namespace Dancy.Core.Models;
 
 public class ParsedEmoteOverride
@@ -7,9 +9,11 @@ public class ParsedEmoteOverride
 
     public string GamePath { get; set; } = string.Empty;
     public string ModdedPapPath { get; set; } = string.Empty;
-    public string NewPapPath { get; set; } = string.Empty;
-
     public string EmoteName { get; set; } = string.Empty;
     public string EmoteCommand { get; set; } = string.Empty;
     public uint EmoteRowId { get; set; }
+
+    public GamePathIdentity AppliesTo => GamePathIdentity.Parse(GamePath);
+
+    public CharacterPathIdentity PapOrigin => CharacterPathIdentity.FromGamePath(ModdedPapPath);
 }

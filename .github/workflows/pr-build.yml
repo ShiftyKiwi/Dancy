@@ -39,6 +39,9 @@ jobs:
     - name: Build with dotnet
       run: dotnet build --configuration Release
 
+    - name: Run Dancy tests
+      run: dotnet test .\Dancy.Tests\Dancy.Tests.csproj --configuration Release --no-build
+
     - name: Store artifacts
       uses: actions/upload-artifact@v4
       with:

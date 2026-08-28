@@ -12,25 +12,37 @@ public class PenumbraJsonConfig
 public static class PenumbraDirectoryResolver
 {
     public static string? GetPenumbraDirectory()
-    {
-        var configDir = Plugin.PluginInterface.ConfigDirectory.FullName;
-        string? parent = Directory.GetParent(configDir)?.FullName;
+        => GetPenumbraDirectory(Plugin.PluginInterface.ConfigDirectory.FullName);
 
+    public static string? GetPenumbraDirectory(string dalamudConfigDirectory)
+    {
+        var parent = Directory.GetParent(dalamudConfigDirectory)?.FullName;
         if (string.IsNullOrWhiteSpace(parent))
             return null;
 
-        string penumbraJson = Path.Combine(parent, "Penumbra.json");
-        if (!File.Exists(penumbraJson))
-            return null;
+        var configPaths = new[]
+        {
+            Path.Combine(parent, "Penumbra", "config", "penumbra.json"),
+            Path.Combine(parent, "Penumbra.json"),
+        };
 
-        try
+        foreach (var configPath in configPaths)
         {
-            var cfg = JsonConvert.DeserializeObject<PenumbraJsonConfig>(File.ReadAllText(penumbraJson));
-            return cfg?.ModDirectory;
+            if (!File.Exists(configPath))
+                continue;
+
+            try
+            {
+                var config = JsonConvert.DeserializeObject<PenumbraJsonConfig>(File.ReadAllText(configPath));
+                if (!string.IsNullOrWhiteSpace(config?.ModDirectory))
+                    return config.ModDirectory;
+            }
+            catch
+            {
+                // Try the legacy config path if the preferred path cannot be read.
+            }
         }
-        catch
-        {
-            return null;
-        }
+
+        return null;
     }
 }

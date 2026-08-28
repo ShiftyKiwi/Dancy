@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ namespace Dancy.Pap
 {
     public static class PapResolver
     {
+        private static readonly ConcurrentDictionary<string, IReadOnlyList<string>> ResolvedPaths = new(StringComparer.OrdinalIgnoreCase);
         private static readonly string[] RaceIds =
         {
         "c0101","c0201","c0301","c0401","c0501","c0601",
@@ -47,6 +49,17 @@ namespace Dancy.Pap
 
         public static List<string> ResolvePapFiles(string timelineKey)
         {
+            if (string.IsNullOrWhiteSpace(timelineKey))
+                return new List<string>();
+
+            return ResolvedPaths.GetOrAdd(timelineKey.Replace('\\', '/'), ResolvePapFilesCore).ToList();
+        }
+
+        public static void ClearCache()
+            => ResolvedPaths.Clear();
+
+        private static IReadOnlyList<string> ResolvePapFilesCore(string timelineKey)
+        {
             var results = new List<string>();
 
             // globaler Pfad (gibt es selten, aber schadet nicht)
@@ -67,7 +80,7 @@ namespace Dancy.Pap
                 }
             }
 
-            return results;
+            return results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
     }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using System.Text;
 using System.Threading.Tasks;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface;
@@ -13,8 +14,11 @@ using ECommons.DalamudServices;
 using Penumbra.Api.IpcSubscribers;
 using Dancy.Core;
 using Dancy.Core.Models;
+using Dancy.Domain;
 using Dancy.Pap;
 using Dancy.Files;
+using Dancy.Persistence;
+using Dancy.Services;
 
 namespace Dancy.Windows
 {
@@ -45,13 +49,16 @@ namespace Dancy.Windows
 
         // State: emote scanning
         private List<RemappableOption> remappableOptions = new();
-        private bool showUnsafeOptions = false;
         private RemappableOption? selectedOption = null;
         private readonly HashSet<string> selectedSourceGamePaths = new(StringComparer.OrdinalIgnoreCase);
 
         // State: target emote
         private string emoteSearch = string.Empty;
         private LuminaEmote? selectedReplacementEmote = null;
+        private OverridePlan? previewPlan;
+        private bool isCreatingOverride;
+        private string? lastDiagnostics;
+        private readonly OverrideService overrideService = new();
 
         // Step navigation
         private WizardStep currentStep = WizardStep.SelectMod;
@@ -122,6 +129,7 @@ namespace Dancy.Windows
             selectedOption = null;
             selectedSourceGamePaths.Clear();
             selectedReplacementEmote = null;
+            previewPlan = null;
 
             await Task.Run(() =>
             {
@@ -134,7 +142,11 @@ namespace Dancy.Windows
                         return;
                     }
 
-                    var modFolder = Path.Combine(penRoot, selectedModDirectory);
+                    if (!PathSafety.TryResolveInsideRoot(penRoot, selectedModDirectory, out var modFolder))
+                    {
+                        lastScanError = "Dancy refused an unsafe Penumbra mod directory.";
+                        return;
+                    }
                     if (!Directory.Exists(modFolder))
                     {
                         lastScanError = $"Mod folder does not exist: {modFolder}";
@@ -217,6 +229,9 @@ namespace Dancy.Windows
         {
             ImGui.Separator();
 
+            if (!string.IsNullOrWhiteSpace(lastDiagnostics) && ImGui.Button("Copy diagnostics"))
+                ImGui.SetClipboardText(lastDiagnostics);
+
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.65f, 0.0f, 1.0f));
             ImGui.TextWrapped(
                 "Dancy is currently in Early Access. "
@@ -298,7 +313,7 @@ namespace Dancy.Windows
         private void DrawStepNavigation()
         {
             bool hasMod = selectedModDirectory != null;
-            var filtered = remappableOptions.Where(o => showUnsafeOptions || o.IsSafeToRemap).ToList();
+            var filtered = remappableOptions;
             bool hasSource = hasMod && filtered.Count > 0;
             bool hasSelectedSource = hasSource && selectedOption != null && filtered.Contains(selectedOption);
             bool hasTarget = hasSelectedSource && selectedReplacementEmote != null;
@@ -430,6 +445,7 @@ namespace Dancy.Windows
                         selectedOption = null;
                         selectedSourceGamePaths.Clear();
                         selectedReplacementEmote = null;
+                        previewPlan = null;
                         lastScanError = null;
                     }
 
@@ -464,7 +480,8 @@ namespace Dancy.Windows
             ImGui.TextDisabled("Reads JSON + PAP in this mod to find emote-based overrides.");
             ImGui.PopStyleColor();
 
-            if (DancyFileManager.DancyExists(Path.Combine(penRoot, selectedModDirectory)))
+            if (PathSafety.TryResolveInsideRoot(penRoot, selectedModDirectory, out var selectedModPath)
+                && DancyFileManager.DancyExists(selectedModPath))
             {
                 ImGui.Spacing();
                 ImGui.Spacing();
@@ -478,7 +495,7 @@ namespace Dancy.Windows
 
                 if (ImGui.Button("Remove Dancy from mod"))
                 {
-                    bool isDeleted = DancyFileManager.RemoveDancy(Path.Combine(penRoot, selectedModDirectory));
+                    bool isDeleted = DancyFileManager.RemoveDancy(selectedModPath);
                     if (isDeleted)
                         Svc.Chat.Print("[Dancy] Removed existing Dancy overrides from the selected mod.");
                     else
@@ -523,12 +540,9 @@ namespace Dancy.Windows
                 return;
             }
 
-            //ImGui.Checkbox("Show unsafe / multi-source options", ref showUnsafeOptions);
             ImGui.Spacing();
 
-            var filtered = remappableOptions
-                .Where(o => showUnsafeOptions || o.IsSafeToRemap)
-                .ToList();
+            var filtered = remappableOptions;
 
             if (filtered.Count == 0)
             {
@@ -568,6 +582,7 @@ namespace Dancy.Windows
                         selectedOption = opt;
                         ResetSelectedSourceGamePaths(opt);
                         selectedReplacementEmote = null;
+                        previewPlan = null;
                     }
 
                     ImGui.TableNextColumn();
@@ -605,13 +620,14 @@ namespace Dancy.Windows
                                | ImGuiTableFlags.BordersInnerV
                                | ImGuiTableFlags.SizingStretchSame;
 
-            if (ImGui.BeginTable("DancySelectedOptionTable", 5, flagsDetails))
+            if (ImGui.BeginTable("DancySelectedOptionTable", 6, flagsDetails))
             {
                 ImGui.TableSetupColumn("Use");
                 ImGui.TableSetupColumn("Emote");
-                ImGui.TableSetupColumn("Command");
+                ImGui.TableSetupColumn("Applies to");
+                ImGui.TableSetupColumn("PAP origin");
+                ImGui.TableSetupColumn("Phase");
                 ImGui.TableSetupColumn("Game path");
-                ImGui.TableSetupColumn("Modded PAP");
                 ImGui.TableHeadersRow();
 
                 foreach (var (e, index) in selected.Entries.Select((Entry, Index) => (Entry, Index)))
@@ -627,6 +643,8 @@ namespace Dancy.Windows
                             selectedSourceGamePaths.Add(e.GamePath);
                         else
                             selectedSourceGamePaths.Remove(e.GamePath);
+
+                        previewPlan = null;
                     }
 
                     ImGui.SameLine();
@@ -634,19 +652,25 @@ namespace Dancy.Windows
                     {
                         selectedSourceGamePaths.Clear();
                         selectedSourceGamePaths.Add(e.GamePath);
+                        previewPlan = null;
                     }
 
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.EmoteName);
+                    ImGui.TextWrapped(string.IsNullOrWhiteSpace(e.EmoteCommand)
+                        ? e.EmoteName
+                        : $"{e.EmoteName}\n{e.EmoteCommand}");
 
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.EmoteCommand);
+                    ImGui.TextUnformatted(e.AppliesTo.Character.DisplayName);
 
                     ImGui.TableNextColumn();
-                    ImGui.TextWrapped(e.GamePath);
+                    ImGui.TextUnformatted(e.PapOrigin.IsKnown ? e.PapOrigin.DisplayName : "Mod-relative PAP");
 
                     ImGui.TableNextColumn();
-                    ImGui.TextWrapped(e.ModdedPapPath);
+                    ImGui.TextUnformatted(e.AppliesTo.Phase.ToString());
+
+                    ImGui.TableNextColumn();
+                    ImGui.TextWrapped($"{e.GamePath}\n{e.ModdedPapPath}");
                     ImGui.PopID();
                 }
 
@@ -665,6 +689,7 @@ namespace Dancy.Windows
             else if (ImGui.Button($"Continue with {selectedSourceEntries.Count} source path{(selectedSourceEntries.Count == 1 ? string.Empty : "s")}"))
             {
                 selectedReplacementEmote = null;
+                previewPlan = null;
                 currentStep = WizardStep.SelectTarget;
             }
 
@@ -686,9 +711,7 @@ namespace Dancy.Windows
                 return;
             }
 
-            var filtered = remappableOptions
-                .Where(o => showUnsafeOptions || o.IsSafeToRemap)
-                .ToList();
+            var filtered = remappableOptions;
 
             if (filtered.Count == 0)
             {
@@ -716,9 +739,27 @@ namespace Dancy.Windows
             ImGui.InputText("Search target emote", ref emoteSearch, 100);
             ImGui.PopItemWidth();
 
+            var showNonLoopTargets = plugin.Configuration.ShowNonLoopTargets;
+            if (ImGui.Checkbox("Include non-loop targets", ref showNonLoopTargets))
+            {
+                plugin.Configuration.ShowNonLoopTargets = showNonLoopTargets;
+                plugin.Configuration.Save();
+            }
+
             ImGui.Spacing();
 
-            var results = EmoteLibrary.AllEmotes
+            var targetCatalog = EmoteLibrary.AllEmotes
+                .Where(emote => TargetEmotePolicy.IsSelectable(plugin.Configuration.ShowNonLoopTargets, emote.IsLoopCapable))
+                .ToList();
+            if (!plugin.Configuration.ShowNonLoopTargets
+                && selectedReplacementEmote != null
+                && !selectedReplacementEmote.IsLoopCapable)
+            {
+                selectedReplacementEmote = null;
+                previewPlan = null;
+            }
+
+            var results = targetCatalog
                 .Where(e => string.IsNullOrEmpty(emoteSearch)
                          || e.Name.Contains(emoteSearch, StringComparison.OrdinalIgnoreCase)
                          || e.Command.Contains(emoteSearch, StringComparison.OrdinalIgnoreCase))
@@ -753,6 +794,7 @@ namespace Dancy.Windows
                     if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns))
                     {
                         selectedReplacementEmote = emote;
+                        previewPlan = null;
                     }
 
                     ImGui.TableNextColumn();
@@ -766,14 +808,8 @@ namespace Dancy.Windows
 
             if (selectedReplacementEmote != null)
             {
-                // Simple heuristic: does this look like a looped dance?
-                bool looksLikeLoop = false;
-                var key = selectedReplacementEmote.PrimaryTimelineKey ?? string.Empty;
-                if (key.IndexOf("loop", StringComparison.OrdinalIgnoreCase) >= 0
-                    || key.IndexOf("dance", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    looksLikeLoop = true;
-                }
+                var looksLikeLoop = selectedReplacementEmote.IsLoopCapable;
+                previewPlan ??= CreatePreviewPlan(opt, selectedReplacementEmote, selectedSourceEntries);
 
                 // Warning / explanation box
                 ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f);
@@ -810,6 +846,9 @@ namespace Dancy.Windows
                 ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
                 ImGui.Text($"Source paths: {selectedSourceEntries.Count} selected");
                 ImGui.Text($"Target: {selectedReplacementEmote.Name} ({selectedReplacementEmote.Command})");
+                ImGui.TextWrapped($"Target timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
+
+                DrawMappingPreview(previewPlan);
 
                 ImGui.Spacing();
 
@@ -819,9 +858,15 @@ namespace Dancy.Windows
                     ImGui.Text("Select at least one source path in Step 2.");
                     ImGui.PopStyleColor();
                 }
-                else if (ImGui.Button("Create Dancy override"))
+                else if (!previewPlan.IsValid)
                 {
-                    _ = CreateOverrideAsync(opt, selectedReplacementEmote, selectedSourceEntries);
+                    ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.55f, 0.45f, 1f));
+                    ImGui.TextWrapped(string.Join("\n", previewPlan.Errors));
+                    ImGui.PopStyleColor();
+                }
+                else if (ImGui.Button(isCreatingOverride ? "Creating override..." : "Create Dancy override") && !isCreatingOverride)
+                {
+                    _ = CreateOverrideAsync(opt, selectedReplacementEmote, selectedSourceEntries, previewPlan);
                 }
 
                 if (selectedSourceEntries.Count > 0)
@@ -869,185 +914,147 @@ namespace Dancy.Windows
                 .Where(e => selectedSourceGamePaths.Contains(e.GamePath))
                 .ToList();
 
-        private static List<string> ResolveTargetGamePathsForSource(
-            ParsedEmoteOverride sourceEntry,
-            IReadOnlyList<string> targetGamePaths)
+        private OverridePlan CreatePreviewPlan(
+            RemappableOption source,
+            LuminaEmote target,
+            IReadOnlyList<ParsedEmoteOverride> sourceEntries)
         {
-            var sourceDir = GetGamePathDirectory(sourceEntry.GamePath);
-            var exact = targetGamePaths
-                .Where(path => string.Equals(GetGamePathDirectory(path), sourceDir, StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (exact.Count > 0)
-                return exact;
-
-            var sourceRace = GetGamePathSegment(sourceEntry.GamePath, 'c');
-            var sourceLayer = GetGamePathSegment(sourceEntry.GamePath, 'a');
-            if (string.IsNullOrEmpty(sourceRace) || string.IsNullOrEmpty(sourceLayer))
-                return new List<string>();
-
-            return targetGamePaths
-                .Where(path =>
-                    string.Equals(GetGamePathSegment(path, 'c'), sourceRace, StringComparison.OrdinalIgnoreCase)
-                    && string.Equals(GetGamePathSegment(path, 'a'), sourceLayer, StringComparison.OrdinalIgnoreCase))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
-        private static string GetGamePathDirectory(string gamePath)
-        {
-            var normalized = NormalizeGamePath(gamePath);
-            var lastSlash = normalized.LastIndexOf('/');
-            return lastSlash < 0 ? string.Empty : normalized[..lastSlash];
-        }
-
-        private static string? GetGamePathSegment(string gamePath, char prefix)
-            => NormalizeGamePath(gamePath)
-                .Split('/', StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault(segment =>
-                    segment.Length == 5
-                    && segment[0] == prefix
-                    && segment.Skip(1).All(char.IsDigit));
-
-        private static string NormalizeGamePath(string gamePath)
-            => gamePath.Replace('\\', '/').TrimStart('/');
-
-        private static void ApplyOverrideOnFrameworkThread(string defaultPath, string srcPap, string newPapAbs)
-        {
-            var tcs = new TaskCompletionSource<bool>();
-            Svc.Framework.RunOnFrameworkThread(() =>
+            var targetPaths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
+            return OverridePlanner.Create(new OverridePlanRequest
             {
-                try
-                {
-                    PapEditor.ApplyOverride(defaultPath, srcPap, newPapAbs);
-                    tcs.SetResult(true);
-                }
-                catch (Exception ex)
-                {
-                    tcs.SetException(ex);
-                }
+                ModIdentity = selectedModDirectory ?? string.Empty,
+                SourceGroupName = source.GroupName,
+                SourceOptionName = source.OptionName,
+                TargetTimelineKey = target.PrimaryTimelineKey,
+                TargetName = target.Name,
+                TargetCommand = target.Command,
+                Sources = sourceEntries
+                    .Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath))
+                    .ToList(),
+                TargetGamePaths = targetPaths,
             });
-
-            tcs.Task.GetAwaiter().GetResult();
         }
 
-        private async Task CreateOverrideAsync(RemappableOption source, LuminaEmote target, IReadOnlyList<ParsedEmoteOverride> sourceEntries)
+        private static void DrawMappingPreview(OverridePlan plan)
         {
-            if (selectedModDirectory == null)
-                return;
-
-            if (!modList.TryGetValue(selectedModDirectory, out var _))
-                return;
-
-            await Task.Run(() =>
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Mapping preview");
+            if (!plan.IsValid)
             {
-                try
+                ImGui.TextDisabled("No metadata will be changed until this plan is valid.");
+                return;
+            }
+
+            foreach (var copy in plan.PapCopies)
+            {
+                var strategies = string.Join(", ", copy.MatchResults
+                    .Select(result => result.Strategy.ToString())
+                    .Distinct(StringComparer.Ordinal));
+                ImGui.TextWrapped($"{copy.SourcePapPath} -> {copy.TargetGamePaths.Count} target path(s) [{strategies}]");
+            }
+
+            foreach (var warning in plan.Warnings)
+                ImGui.TextWrapped($"Warning: {warning}");
+        }
+
+        private async Task CreateOverrideAsync(
+            RemappableOption source,
+            LuminaEmote target,
+            IReadOnlyList<ParsedEmoteOverride> sourceEntries,
+            OverridePlan plan)
+        {
+            if (selectedModDirectory == null || isCreatingOverride)
+                return;
+
+            if (!modList.ContainsKey(selectedModDirectory) || !plan.IsValid)
+                return;
+
+            isCreatingOverride = true;
+            try
+            {
+                await Task.Run(() =>
                 {
-                    if (selectedModDirectory == null)
+                    var modDirectory = selectedModDirectory;
+                    if (modDirectory == null)
                         return;
 
-                    var selectedEntries = sourceEntries.ToList();
-                    if (selectedEntries.Count == 0)
-                    {
-                        Svc.Chat.PrintError("[Dancy] No source paths selected.");
-                        return;
-                    }
+                    if (sourceEntries.Count == 0)
+                        throw new InvalidOperationException("No source paths were selected.");
 
                     var penumbraRoot = PenumbraDirectoryResolver.GetPenumbraDirectory();
                     if (string.IsNullOrWhiteSpace(penumbraRoot))
-                    {
-                        Svc.Chat.PrintError("[Dancy] Could not locate Penumbra mod directory.");
-                        return;
-                    }
-
-                    var modFolder = Path.Combine(penumbraRoot, selectedModDirectory);
-
+                        throw new InvalidOperationException("Could not locate the Penumbra mod directory.");
+                    if (!PathSafety.TryResolveInsideRoot(penumbraRoot, modDirectory, out var modFolder))
+                        throw new InvalidOperationException("Dancy refused an unsafe Penumbra mod directory.");
                     if (!Directory.Exists(modFolder))
-                    {
-                        Svc.Chat.PrintError($"[Dancy] Mod folder does not exist: {modFolder}");
-                        return;
-                    }
+                        throw new DirectoryNotFoundException("The selected Penumbra mod folder does not exist.");
 
-                    // 1) Ensure Dancy folders exist
-                    string dancyRoot = Path.Combine(modFolder, "yucksdancy");
-                    string papDir = Path.Combine(dancyRoot, "paps");
-
-                    Directory.CreateDirectory(dancyRoot);
-                    Directory.CreateDirectory(papDir);
-
-                    var targetGamePaths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
-                    if (targetGamePaths.Count == 0)
-                    {
-                        Svc.Chat.PrintError("[Dancy] No game PAP paths found for target emote.");
-                        return;
-                    }
-
-                    var finalMappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var sourcePapGroup in selectedEntries.GroupBy(e => e.ModdedPapPath, StringComparer.OrdinalIgnoreCase))
-                    {
-                        var relPap = sourcePapGroup.Key.Replace('/', Path.DirectorySeparatorChar);
-                        var srcPap = Path.Combine(modFolder, relPap);
-
-                        if (!File.Exists(srcPap))
-                        {
-                            Svc.Chat.PrintError($"[Dancy] Source PAP not found: {srcPap}");
-                            return;
-                        }
-
-                        var mappedTargetGamePaths = sourcePapGroup
-                            .SelectMany(entry => ResolveTargetGamePathsForSource(entry, targetGamePaths))
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToList();
-
-                        if (mappedTargetGamePaths.Count == 0)
-                        {
-                            Svc.Chat.PrintError("[Dancy] No target PAP path matched the selected source path.");
-                            return;
-                        }
-
-                        string newPapName = Guid.NewGuid().ToString("N") + ".pap";
-                        string newPapAbs = Path.Combine(papDir, newPapName);
-                        string newPapRel = Path.Combine("yucksdancy", "paps", newPapName).Replace('\\', '/');
-
-                        foreach (var e in sourcePapGroup)
-                            e.NewPapPath = newPapRel;
-
-                        ApplyOverrideOnFrameworkThread(mappedTargetGamePaths[0], srcPap, newPapAbs);
-
-                        if (!File.Exists(newPapAbs))
-                        {
-                            Svc.Chat.PrintError("[Dancy] PAP copy was not created.");
-                            return;
-                        }
-
-                        foreach (var gamePath in mappedTargetGamePaths)
-                            finalMappings[gamePath] = newPapRel;
-                    }
-
-                    if (finalMappings.Count == 0)
-                    {
-                        Svc.Chat.PrintError("[Dancy] No override mappings were created.");
-                        return;
-                    }
-
-                    Penumbra.PenumbraGroupWriter.CreateOrUpdateDancyGroupOld(
-                        modFolder,
-                        source,
-                        target,
-                        finalMappings
-                    );
-
-                    var reloaded = TryReloadMod(selectedModDirectory);
-                    Svc.Chat.Print(reloaded
+                    var operation = overrideService.CreateOrUpdate(modFolder, modDirectory, selectedModName ?? string.Empty, plan);
+                    lastDiagnostics = BuildDiagnostics(source, target, plan, operation.Execution, operation.Write, operation.Reload.Succeeded);
+                    Svc.Chat.Print(operation.Reload.Succeeded
                         ? "[Dancy] Override created successfully."
-                        : "[Dancy] Override created successfully. Penumbra reload did not complete; use Refresh Data, reload the mod, or restart if the option or Changed Items tab looks stale.");
-                }
-                catch (Exception ex)
-                {
-                    Svc.Chat.PrintError($"[Dancy] Override creation failed: {ex.Message}");
-                }
-            });
+                        : "[Dancy] Override created successfully, but Penumbra reload did not complete. Reload the mod manually if its UI still looks stale.");
+                });
+            }
+            catch (Exception ex)
+            {
+                Svc.Log.Error(ex, "[Dancy] Override creation failed.");
+                lastDiagnostics = BuildFailureDiagnostics(source, target, plan, ex);
+                Svc.Chat.PrintError($"[Dancy] Override creation failed: {ex.Message}");
+            }
+            finally
+            {
+                isCreatingOverride = false;
+            }
+        }
+
+        private string BuildDiagnostics(
+            RemappableOption source,
+            LuminaEmote target,
+            OverridePlan plan,
+            OverrideExecutionResult execution,
+            Penumbra.PenumbraWriteResult write,
+            bool reloaded)
+        {
+            var diagnostics = new StringBuilder();
+            diagnostics.AppendLine("Dancy diagnostics");
+            diagnostics.AppendLine($"Build: {typeof(Plugin).Assembly.GetName().Version}");
+            diagnostics.AppendLine($"Build MVID: {typeof(Plugin).Module.ModuleVersionId}");
+            diagnostics.AppendLine($"Override: {plan.OverrideId}");
+            diagnostics.AppendLine($"Source: ({source.GroupName}) {source.OptionName}");
+            diagnostics.AppendLine($"Target: {target.Name} ({target.Command}) [{target.PrimaryTimelineKey}]");
+            diagnostics.AppendLine($"Metadata: {write.Format} ({Path.GetFileName(write.MetadataPath)})");
+            diagnostics.AppendLine($"Penumbra reload: {(reloaded ? "succeeded" : "not confirmed")}");
+
+            foreach (var copy in plan.PapCopies)
+            {
+                diagnostics.AppendLine($"Source PAP: {copy.SourcePapPath}");
+                diagnostics.AppendLine($"  paths: {string.Join(", ", copy.SourceGamePaths)}");
+                diagnostics.AppendLine($"  strategy: {string.Join(", ", copy.MatchResults.Select(result => result.Strategy).Distinct())}");
+            }
+
+            foreach (var patch in execution.PapResults)
+                diagnostics.AppendLine($"Patched: {patch.TargetGamePath} -> {patch.EventIdentifier} ({patch.PatchedTimelineEntries} timeline entries)");
+            foreach (var warning in plan.Warnings)
+                diagnostics.AppendLine($"Warning: {warning}");
+
+            return diagnostics.ToString();
+        }
+
+        private string BuildFailureDiagnostics(RemappableOption source, LuminaEmote target, OverridePlan plan, Exception exception)
+        {
+            var diagnostics = new StringBuilder();
+            diagnostics.AppendLine("Dancy diagnostics");
+            diagnostics.AppendLine($"Build: {typeof(Plugin).Assembly.GetName().Version}");
+            diagnostics.AppendLine($"Build MVID: {typeof(Plugin).Module.ModuleVersionId}");
+            diagnostics.AppendLine($"Override: {plan.OverrideId}");
+            diagnostics.AppendLine($"Source: ({source.GroupName}) {source.OptionName}");
+            diagnostics.AppendLine($"Target: {target.Name} ({target.Command}) [{target.PrimaryTimelineKey}]");
+            diagnostics.AppendLine("Result: failed before metadata was committed.");
+            foreach (var warning in plan.Warnings)
+                diagnostics.AppendLine($"Warning: {warning}");
+            diagnostics.AppendLine(exception.ToString());
+            return diagnostics.ToString();
         }
 
         private bool TryReloadMod(string modDirectory)
