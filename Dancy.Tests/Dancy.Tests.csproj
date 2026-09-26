@@ -24,13 +24,6 @@
     <Compile Include="..\Dancy\Persistence\AtomicJsonFile.cs" Link="Persistence\AtomicJsonFile.cs" />
     <Compile Include="..\Dancy\Persistence\PathSafety.cs" Link="Persistence\PathSafety.cs" />
     <Compile Include="..\Dancy\Pap\PapFileInspector.cs" Link="Pap\PapFileInspector.cs" />
-    <Compile Include="..\Dancy\Animation\BoneMask.cs" Link="Animation\BoneMask.cs" />
-    <Compile Include="..\Dancy\Animation\BoneMaskResolution.cs" Link="Animation\BoneMaskResolution.cs" />
-    <Compile Include="..\Dancy\Animation\GeneratedBoneMaskAsset.cs" Link="Animation\GeneratedBoneMaskAsset.cs" />
-    <Compile Include="..\Dancy\Animation\AnimationTrackExclusionWriter.cs" Link="Animation\AnimationTrackExclusionWriter.cs" />
-    <Compile Include="..\Dancy\Animation\AnimationInspectionModels.cs" Link="Animation\AnimationInspectionModels.cs" />
-    <Compile Include="..\Dancy\Animation\AnimationTransformMath.cs" Link="Animation\AnimationTransformMath.cs" />
-    <Compile Include="..\Dancy\Animation\AnimationSemanticComparison.cs" Link="Animation\AnimationSemanticComparison.cs" />
     <Compile Include="..\Dancy\Services\PenumbraReloadResult.cs" Link="Services\PenumbraReloadResult.cs" />
     <Compile Include="..\Dancy\Models\ParsedEmoteOverride.cs" Link="Models\ParsedEmoteOverride.cs" />
   </ItemGroup>

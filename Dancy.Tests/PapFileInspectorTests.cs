@@ -12,6 +12,7 @@ public class PapFileInspectorTests
 
         Assert.Equal(1, inspection.AnimationCount);
         Assert.Equal("fixture_event", Assert.Single(inspection.AnimationNames));
+        Assert.Equal(7, Assert.Single(inspection.HavokIndices));
         Assert.Equal(8, Assert.Single(inspection.TimelineSectionSizes));
     }
 
@@ -46,6 +47,7 @@ public class PapFileInspectorTests
         BitConverter.GetBytes(70).CopyTo(bytes, 22);
         var nameBytes = System.Text.Encoding.UTF8.GetBytes(animationName);
         nameBytes.CopyTo(bytes, 26);
+        BitConverter.GetBytes((short)7).CopyTo(bytes, 60);
         BitConverter.GetBytes(8).CopyTo(bytes, 74);
         return bytes;
     }

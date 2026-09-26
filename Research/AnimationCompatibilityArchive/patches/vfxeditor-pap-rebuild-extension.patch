@@ -1,0 +1,1224 @@
+diff --git a/VFXEditor.Tests/PapAnimationRebuildServiceTests.cs b/VFXEditor.Tests/PapAnimationRebuildServiceTests.cs
+index 9fdb7627..93e21cd2 100644
+--- a/VFXEditor.Tests/PapAnimationRebuildServiceTests.cs
++++ b/VFXEditor.Tests/PapAnimationRebuildServiceTests.cs
+@@ -113,6 +113,89 @@ public sealed class PapAnimationRebuildServiceTests : IDisposable
+         Assert.Equal( ["Could not clean the VFXEditor temporary workspace: sharing violation."], response.Warnings );
+     }
+
++    [Fact]
++    public void AcceptsAnExplicitReferenceComponentMaskAndRejectsPartialTrackRemoval()
++    {
++        var executor = new FakeExecutor();
++        var service = new PapAnimationRebuildService( executor );
++        var source = CreateFile( "source.pap" );
++        var reference = CreateFile( "reference.pap" );
++        var skeleton = CreateFile( "target.sklb" );
++        var request = new PapAnimationRebuildRequest {
++            SchemaVersion = PapAnimationRebuildApi.SchemaVersion,
++            SourcePath = source,
++            OutputPath = Path.Combine( Root, "output.pap" ),
++            TargetSkeletonPath = skeleton,
++            MotionIndex = 0,
++            ReferencePath = reference,
++            ReferenceMotionIndex = 0,
++            ComponentMasks =
++            [
++                new PapAnimationTransformComponentMask {
++                    BoneName = "iv_ochinko_a",
++                    TranslationMode = PapAnimationTransformComponentModes.Source,
++                    RotationMode = PapAnimationTransformComponentModes.TargetReference,
++                    ScaleMode = PapAnimationTransformComponentModes.Source,
++                },
++            ],
++        };
++
++        Assert.True( Response( service.Handle( PapAnimationRebuildApi.Serialize( request ) ) ).Success );
++        Assert.Equal( reference, executor.LastRequest!.ReferencePath );
++        Assert.Equal( PapAnimationTransformComponentModes.TargetReference, Assert.Single( executor.LastRequest.ComponentMasks ).RotationMode );
++
++        request.ComponentMasks[0].RotationMode = PapAnimationTransformComponentModes.RemoveTrack;
++        Assert.Equal( PapAnimationRebuildErrorCodes.ComponentMaskInvalid, Response( service.Handle( PapAnimationRebuildApi.Serialize( request ) ) ).ErrorCode );
++    }
++
++    [Fact]
++    public void RunsReadOnlyAnalysisThroughTheSameValidatedService()
++    {
++        var executor = new FakeExecutor();
++        var service = new PapAnimationRebuildService( executor );
++        var source = CreateFile( "source.pap" );
++        var reference = CreateFile( "reference.pap" );
++        var skeleton = CreateFile( "target.sklb" );
++        var request = PapAnimationRebuildApi.Serialize( new PapAnimationTransformAnalysisRequest {
++            SchemaVersion = PapAnimationRebuildApi.SchemaVersion,
++            SourcePath = source,
++            ReferencePath = reference,
++            TargetSkeletonPath = skeleton,
++            MotionIndex = 0,
++            ReferenceMotionIndex = 0,
++            BoneNames = ["iv_ochinko_a", "iv_kougan_l"],
++        } );
++
++        var response = JsonSerializer.Deserialize<PapAnimationTransformAnalysisResponse>( service.HandleAnalysis( request ), PapAnimationRebuildApi.JsonOptions )!;
++
++        Assert.True( response.Success );
++        Assert.Equal( ["iv_kougan_l", "iv_ochinko_a"], executor.LastAnalysisRequest!.BoneNames );
++        Assert.Equal( 1, executor.AnalysisCallCount );
++    }
++
++    [Fact]
++    public void RunsSkeletonRestAnalysisWithoutAReferencePap()
++    {
++        var executor = new FakeExecutor();
++        var service = new PapAnimationRebuildService( executor );
++        var source = CreateFile( "source.pap" );
++        var skeleton = CreateFile( "target.sklb" );
++        var request = PapAnimationRebuildApi.Serialize( new PapAnimationTransformAnalysisRequest {
++            SchemaVersion = PapAnimationRebuildApi.SchemaVersion,
++            SourcePath = source,
++            TargetSkeletonPath = skeleton,
++            MotionIndex = 0,
++            UseSkeletonRest = true,
++            BoneNames = ["iv_ochinko_a"],
++        } );
++
++        var response = JsonSerializer.Deserialize<PapAnimationTransformAnalysisResponse>( service.HandleAnalysis( request ), PapAnimationRebuildApi.JsonOptions )!;
++
++        Assert.True( response.Success );
++        Assert.True( executor.LastAnalysisRequest!.UseSkeletonRest );
++        Assert.Empty( executor.LastAnalysisRequest.ReferencePath );
++    }
++
+     public void Dispose()
+     {
+         if( Directory.Exists( Root ) ) Directory.Delete( Root, recursive: true );
+@@ -144,6 +227,8 @@ public sealed class PapAnimationRebuildServiceTests : IDisposable
+         public int CallCount { get; private set; }
+         public Action? OnExecute { get; init; }
+         public Func<ValidatedPapAnimationRebuildRequest, PapAnimationRebuildResponse>? ResultFactory { get; init; }
++        public ValidatedPapAnimationTransformAnalysisRequest? LastAnalysisRequest { get; private set; }
++        public int AnalysisCallCount { get; private set; }
+
+         public PapAnimationRebuildResponse Execute( ValidatedPapAnimationRebuildRequest request )
+         {
+@@ -157,5 +242,15 @@ public sealed class PapAnimationRebuildServiceTests : IDisposable
+                 ActuallyExcludedBoneNames = [.. request.ExcludedBoneNames],
+             };
+         }
++
++        public PapAnimationTransformAnalysisResponse Analyze( ValidatedPapAnimationTransformAnalysisRequest request )
++        {
++            LastAnalysisRequest = request;
++            AnalysisCallCount++;
++            return new PapAnimationTransformAnalysisResponse {
++                Success = true,
++                Tracks = request.BoneNames.Select( name => new PapAnimationTransformTrackAnalysis { BoneName = name } ).ToList(),
++            };
++        }
+     }
+ }
+diff --git a/VFXEditor/Api/PapAnimationRebuildApi.cs b/VFXEditor/Api/PapAnimationRebuildApi.cs
+index 830afbc4..e453b00e 100644
+--- a/VFXEditor/Api/PapAnimationRebuildApi.cs
++++ b/VFXEditor/Api/PapAnimationRebuildApi.cs
+@@ -15,6 +15,7 @@ namespace VfxEditor.Api {
+         public const string ApiVersion = "1.0";
+         public const string RebuildEndpoint = "VFXEditor.PapAnimationRebuild";
+         public const string CapabilitiesEndpoint = "VFXEditor.PapAnimationRebuild.Capabilities";
++        public const string AnalyzeEndpoint = "VFXEditor.PapAnimationRebuild.Analyze";
+
+         internal static readonly JsonSerializerOptions JsonOptions = new() {
+             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+@@ -47,6 +48,29 @@ namespace VfxEditor.Api {
+             }
+         }
+
++        public static bool TryDeserializeAnalysisRequest( string requestJson, out PapAnimationTransformAnalysisRequest request, out PapAnimationTransformAnalysisResponse error ) {
++            request = new PapAnimationTransformAnalysisRequest();
++            error = new PapAnimationTransformAnalysisResponse();
++            if( string.IsNullOrWhiteSpace( requestJson ) ) {
++                error = AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "A JSON request is required." );
++                return false;
++            }
++
++            try {
++                var deserialized = JsonSerializer.Deserialize<PapAnimationTransformAnalysisRequest>( requestJson, JsonOptions );
++                if( deserialized == null ) {
++                    error = AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "The JSON request did not contain an object." );
++                    return false;
++                }
++                request = deserialized;
++                return true;
++            }
++            catch( JsonException exception ) {
++                error = AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, $"The JSON request could not be parsed: {exception.Message}" );
++                return false;
++            }
++        }
++
+         public static PapAnimationRebuildResponse Failure( string errorCode, string error, IEnumerable<string>? warnings = null ) => new() {
+             SchemaVersion = SchemaVersion,
+             ApiVersion = ApiVersion,
+@@ -55,6 +79,15 @@ namespace VfxEditor.Api {
+             Error = error,
+             Warnings = warnings?.ToList() ?? [],
+         };
++
++        public static PapAnimationTransformAnalysisResponse AnalysisFailure( string errorCode, string error, IEnumerable<string>? warnings = null ) => new() {
++            SchemaVersion = SchemaVersion,
++            ApiVersion = ApiVersion,
++            Success = false,
++            ErrorCode = errorCode,
++            Error = error,
++            Warnings = warnings?.ToList() ?? [],
++        };
+     }
+
+     public static class PapAnimationRebuildErrorCodes {
+@@ -73,6 +106,12 @@ namespace VfxEditor.Api {
+         public const string ImportFailed = "IMPORT_FAILED";
+         public const string SerializationFailed = "SERIALIZATION_FAILED";
+         public const string OutputValidationFailed = "OUTPUT_VALIDATION_FAILED";
++        public const string ReferenceNotFound = "REFERENCE_NOT_FOUND";
++        public const string ReferenceBindingInvalid = "REFERENCE_BINDING_INVALID";
++        public const string ReferenceMotionNotFound = "REFERENCE_MOTION_NOT_FOUND";
++        public const string ReferenceDurationMismatch = "REFERENCE_DURATION_MISMATCH";
++        public const string ComponentMaskInvalid = "COMPONENT_MASK_INVALID";
++        public const string ComponentValidationFailed = "COMPONENT_VALIDATION_FAILED";
+         public const string InternalError = "INTERNAL_ERROR";
+     }
+
+@@ -84,6 +123,10 @@ namespace VfxEditor.Api {
+         /// <summary>The hkaAnimationContainer binding index stored by the PAP animation header.</summary>
+         public int MotionIndex { get; set; } = -1;
+         public List<string> ExcludedBoneNames { get; set; } = [];
++        /// <summary>Optional local vanilla or target-reference PAP used only by explicit component masks.</summary>
++        public string ReferencePath { get; set; } = string.Empty;
++        public int ReferenceMotionIndex { get; set; } = -1;
++        public List<PapAnimationTransformComponentMask> ComponentMasks { get; set; } = [];
+     }
+
+     public sealed class PapAnimationRebuildCapabilities {
+@@ -93,6 +136,11 @@ namespace VfxEditor.Api {
+         public bool RebuildExistingPapAnimation { get; set; } = true;
+         public bool RequiresTargetSkeletonPath { get; set; } = true;
+         public bool SupportsExplicitNamedExclusions { get; set; } = true;
++        public bool ProvidesTrackNameEvidence { get; set; } = true;
++        public bool SupportsComponentTransformMasks { get; set; } = true;
++        public bool ProvidesComponentTransformEvidence { get; set; } = true;
++        public bool SupportsReadOnlyTransformAnalysis { get; set; } = true;
++        public bool SupportsSkeletonRestTransformAnalysis { get; set; } = true;
+         public bool SupportsInPlaceSourceMutation { get; set; }
+     }
+
+@@ -107,11 +155,17 @@ namespace VfxEditor.Api {
+         public string MotionName { get; set; } = string.Empty;
+         public int? SourceTrackCount { get; set; }
+         public int? OutputTrackCount { get; set; }
++        public List<string> SourceTrackNames { get; set; } = [];
++        public List<string> OutputTrackNames { get; set; } = [];
+         public float? SourceDurationSeconds { get; set; }
+         public float? OutputDurationSeconds { get; set; }
+         public List<string> RequestedExcludedBoneNames { get; set; } = [];
+         public List<string> ActuallyExcludedBoneNames { get; set; } = [];
+         public List<PapAnimationRebuildSkippedBone> SkippedBones { get; set; } = [];
++        public string ReferenceSha256 { get; set; } = string.Empty;
++        public int? ReferenceMotionIndex { get; set; }
++        public float? ReferenceDurationSeconds { get; set; }
++        public List<PapAnimationComponentMaskEvidence> ComponentMaskEvidence { get; set; } = [];
+         public PapAnimationRebuildStructuralValidation StructuralValidation { get; set; } = new();
+         public string? ErrorCode { get; set; }
+         public string? Error { get; set; }
+@@ -128,6 +182,110 @@ namespace VfxEditor.Api {
+         public bool OutputHavokParsed { get; set; }
+         public bool BindingValid { get; set; }
+         public bool ExpectedTracksRemoved { get; set; }
++        public bool NoUnexpectedTracksRemoved { get; set; }
++        public bool ComponentMasksValid { get; set; }
++        public bool NoUnexpectedTransformChanges { get; set; }
++    }
++
++    public static class PapAnimationTransformComponentModes {
++        public const string Source = "SOURCE";
++        public const string TargetReference = "TARGET_REFERENCE";
++        public const string Rest = "REST";
++        public const string RemoveTrack = "REMOVE_TRACK";
++    }
++
++    /// <summary>
++    /// A component mask is intentionally distinct from excluding a transform
++    /// track. REMOVE_TRACK is valid only when all three components use it.
++    /// </summary>
++    public sealed class PapAnimationTransformComponentMask {
++        public string BoneName { get; set; } = string.Empty;
++        public string TranslationMode { get; set; } = PapAnimationTransformComponentModes.Source;
++        public string RotationMode { get; set; } = PapAnimationTransformComponentModes.Source;
++        public string ScaleMode { get; set; } = PapAnimationTransformComponentModes.Source;
++    }
++
++    public sealed class PapAnimationTransformValue {
++        public float TranslationX { get; set; }
++        public float TranslationY { get; set; }
++        public float TranslationZ { get; set; }
++        public float RotationX { get; set; }
++        public float RotationY { get; set; }
++        public float RotationZ { get; set; }
++        public float RotationW { get; set; } = 1f;
++        public float ScaleX { get; set; } = 1f;
++        public float ScaleY { get; set; } = 1f;
++        public float ScaleZ { get; set; } = 1f;
++    }
++
++    public sealed class PapAnimationTransformTrackSummary {
++        public int SampleCount { get; set; }
++        public bool TranslationChanges { get; set; }
++        public bool RotationChanges { get; set; }
++        public bool ScaleChanges { get; set; }
++        public float TranslationRangeMagnitude { get; set; }
++        public float RotationRangeDegrees { get; set; }
++        public float ScaleRangeMagnitude { get; set; }
++        public PapAnimationTransformValue FirstSample { get; set; } = new();
++        public PapAnimationTransformValue LastSample { get; set; } = new();
++    }
++
++    public sealed class PapAnimationTransformDifference {
++        public float MaximumTranslationDifference { get; set; }
++        public float MaximumRotationDifferenceDegrees { get; set; }
++        public float MaximumScaleDifference { get; set; }
++    }
++
++    public sealed class PapAnimationTransformTrackAnalysis {
++        public string BoneName { get; set; } = string.Empty;
++        public bool SourceTrackPresent { get; set; }
++        public bool ReferenceTrackPresent { get; set; }
++        public PapAnimationTransformTrackSummary? Source { get; set; }
++        public PapAnimationTransformTrackSummary? Reference { get; set; }
++        public PapAnimationTransformDifference? SourceToReference { get; set; }
++    }
++
++    public sealed class PapAnimationTransformAnalysisRequest {
++        public int SchemaVersion { get; set; }
++        public string SourcePath { get; set; } = string.Empty;
++        public string ReferencePath { get; set; } = string.Empty;
++        public string TargetSkeletonPath { get; set; } = string.Empty;
++        public int MotionIndex { get; set; } = -1;
++        public int ReferenceMotionIndex { get; set; } = -1;
++        /// <summary>Samples the target skeleton's actual reference pose at the source motion's sample times.</summary>
++        public bool UseSkeletonRest { get; set; }
++        public List<string> BoneNames { get; set; } = [];
++    }
++
++    public sealed class PapAnimationTransformAnalysisResponse {
++        public int SchemaVersion { get; set; }
++        public string ApiVersion { get; set; } = string.Empty;
++        public string VfxEditorVersion { get; set; } = string.Empty;
++        public bool Success { get; set; }
++        public string SourceSha256 { get; set; } = string.Empty;
++        public string ReferenceSha256 { get; set; } = string.Empty;
++        /// <summary>Either PAP or SKELETON_REST.</summary>
++        public string ReferenceKind { get; set; } = "PAP";
++        public int? MotionIndex { get; set; }
++        public int? ReferenceMotionIndex { get; set; }
++        public float? SourceDurationSeconds { get; set; }
++        public float? ReferenceDurationSeconds { get; set; }
++        public List<PapAnimationTransformTrackAnalysis> Tracks { get; set; } = [];
++        public string? ErrorCode { get; set; }
++        public string? Error { get; set; }
++        public List<string> Warnings { get; set; } = [];
++    }
++
++    public sealed class PapAnimationComponentMaskEvidence {
++        public string BoneName { get; set; } = string.Empty;
++        public string TranslationMode { get; set; } = string.Empty;
++        public string RotationMode { get; set; } = string.Empty;
++        public string ScaleMode { get; set; } = string.Empty;
++        public bool TranslationMatchesSelectedSource { get; set; }
++        public bool RotationMatchesSelectedSource { get; set; }
++        public bool ScaleMatchesSelectedSource { get; set; }
++        public PapAnimationTransformTrackAnalysis? Analysis { get; set; }
++        public PapAnimationTransformTrackSummary? Result { get; set; }
+     }
+
+     public sealed class ValidatedPapAnimationRebuildRequest {
+@@ -136,6 +294,30 @@ namespace VfxEditor.Api {
+         public string TargetSkeletonPath { get; init; } = string.Empty;
+         public int MotionIndex { get; init; }
+         public IReadOnlyList<string> ExcludedBoneNames { get; init; } = Array.Empty<string>();
++        public string ReferencePath { get; init; } = string.Empty;
++        public int ReferenceMotionIndex { get; init; } = -1;
++        public IReadOnlyList<ValidatedPapAnimationTransformComponentMask> ComponentMasks { get; init; } = Array.Empty<ValidatedPapAnimationTransformComponentMask>();
++    }
++
++    public sealed class ValidatedPapAnimationTransformComponentMask {
++        public string BoneName { get; init; } = string.Empty;
++        public string TranslationMode { get; init; } = PapAnimationTransformComponentModes.Source;
++        public string RotationMode { get; init; } = PapAnimationTransformComponentModes.Source;
++        public string ScaleMode { get; init; } = PapAnimationTransformComponentModes.Source;
++        public bool RequiresReference => TranslationMode == PapAnimationTransformComponentModes.TargetReference
++                                      || RotationMode == PapAnimationTransformComponentModes.TargetReference
++                                      || ScaleMode == PapAnimationTransformComponentModes.TargetReference;
++        public bool RemovesTrack => TranslationMode == PapAnimationTransformComponentModes.RemoveTrack;
++    }
++
++    public sealed class ValidatedPapAnimationTransformAnalysisRequest {
++        public string SourcePath { get; init; } = string.Empty;
++        public string ReferencePath { get; init; } = string.Empty;
++        public string TargetSkeletonPath { get; init; } = string.Empty;
++        public int MotionIndex { get; init; }
++        public int ReferenceMotionIndex { get; init; }
++        public bool UseSkeletonRest { get; init; }
++        public IReadOnlyList<string> BoneNames { get; init; } = Array.Empty<string>();
+     }
+
+     public static class PapAnimationRebuildRequestValidator {
+@@ -167,27 +349,137 @@ namespace VfxEditor.Api {
+                 return false;
+             }
+
+-            var names = request.ExcludedBoneNames
+-                .Where( name => !string.IsNullOrWhiteSpace( name ) )
+-                .Select( name => name.Trim() )
++            var masks = NormalizeMasks( request.ComponentMasks, out var maskError );
++            if( maskError != null ) {
++                error = PapAnimationRebuildApi.Failure( PapAnimationRebuildErrorCodes.ComponentMaskInvalid, maskError );
++                return false;
++            }
++            var names = NormalizeNames( request.ExcludedBoneNames )
++                .Concat( masks.Where( mask => mask.RemovesTrack ).Select( mask => mask.BoneName ) )
+                 .Distinct( StringComparer.OrdinalIgnoreCase )
+                 .OrderBy( name => name, StringComparer.OrdinalIgnoreCase )
+                 .ToArray();
+-            if( names.Length == 0 ) {
+-                error = PapAnimationRebuildApi.Failure( PapAnimationRebuildErrorCodes.InvalidRequest, "At least one explicit excluded bone name is required." );
++            if( names.Length == 0 && masks.Count == 0 ) {
++                error = PapAnimationRebuildApi.Failure( PapAnimationRebuildErrorCodes.InvalidRequest, "At least one explicit excluded bone name or component mask is required." );
+                 return false;
+             }
+
++            var needsReference = masks.Any( mask => mask.RequiresReference );
++            var referencePath = string.Empty;
++            if( needsReference ) {
++                if( request.ReferenceMotionIndex < 0 ) {
++                    error = PapAnimationRebuildApi.Failure( PapAnimationRebuildErrorCodes.ComponentMaskInvalid, "A non-negative reference motion index is required for TARGET_REFERENCE component masks." );
++                    return false;
++                }
++                if( !TryNormalizePath( request.ReferencePath, out referencePath ) || !HasExtension( referencePath, ".pap" ) ) {
++                    error = PapAnimationRebuildApi.Failure( PapAnimationRebuildErrorCodes.ComponentMaskInvalid, "Reference path must identify a PAP file when TARGET_REFERENCE is selected." );
++                    return false;
++                }
++            }
++
+             valid = new ValidatedPapAnimationRebuildRequest {
+                 SourcePath = sourcePath,
+                 OutputPath = outputPath,
+                 TargetSkeletonPath = skeletonPath,
+                 MotionIndex = request.MotionIndex,
+                 ExcludedBoneNames = names,
++                ReferencePath = referencePath,
++                ReferenceMotionIndex = request.ReferenceMotionIndex,
++                ComponentMasks = masks,
+             };
+             return true;
+         }
+
++        public static bool TryValidateAnalysis( PapAnimationTransformAnalysisRequest request, out ValidatedPapAnimationTransformAnalysisRequest valid, out PapAnimationTransformAnalysisResponse error ) {
++            valid = new ValidatedPapAnimationTransformAnalysisRequest();
++            error = new PapAnimationTransformAnalysisResponse();
++            if( request.SchemaVersion != PapAnimationRebuildApi.SchemaVersion ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.UnsupportedSchema, $"Schema version {request.SchemaVersion} is not supported." );
++                return false;
++            }
++            if( request.MotionIndex < 0 || (!request.UseSkeletonRest && request.ReferenceMotionIndex < 0) ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "Source motion index and any PAP reference motion index must be zero or greater." );
++                return false;
++            }
++            if( !TryNormalizePath( request.SourcePath, out var sourcePath ) || !HasExtension( sourcePath, ".pap" ) ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "Source path must identify a PAP file." );
++                return false;
++            }
++            var referencePath = string.Empty;
++            if( !request.UseSkeletonRest && (!TryNormalizePath( request.ReferencePath, out referencePath ) || !HasExtension( referencePath, ".pap" )) ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "Reference path must identify a PAP file unless UseSkeletonRest is selected." );
++                return false;
++            }
++            if( !TryNormalizePath( request.TargetSkeletonPath, out var skeletonPath ) || !HasExtension( skeletonPath, ".sklb" ) ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "Target skeleton path must identify an SKLB file." );
++                return false;
++            }
++            var names = NormalizeNames( request.BoneNames );
++            if( names.Length == 0 ) {
++                error = PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InvalidRequest, "At least one explicit bone name is required for transform analysis." );
++                return false;
++            }
++            valid = new ValidatedPapAnimationTransformAnalysisRequest {
++                SourcePath = sourcePath,
++                ReferencePath = referencePath,
++                TargetSkeletonPath = skeletonPath,
++                MotionIndex = request.MotionIndex,
++                ReferenceMotionIndex = request.ReferenceMotionIndex,
++                UseSkeletonRest = request.UseSkeletonRest,
++                BoneNames = names,
++            };
++            return true;
++        }
++
++        private static IReadOnlyList<ValidatedPapAnimationTransformComponentMask> NormalizeMasks( IEnumerable<PapAnimationTransformComponentMask>? raw, out string? error ) {
++            error = null;
++            var masks = new List<ValidatedPapAnimationTransformComponentMask>();
++            var names = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
++            foreach( var item in raw ?? [] ) {
++                var name = item.BoneName?.Trim() ?? string.Empty;
++                var translation = NormalizeMode( item.TranslationMode );
++                var rotation = NormalizeMode( item.RotationMode );
++                var scale = NormalizeMode( item.ScaleMode );
++                if( string.IsNullOrWhiteSpace( name ) || translation == null || rotation == null || scale == null ) {
++                    error = "Every component mask requires one bone name and valid SOURCE, TARGET_REFERENCE, REST, or REMOVE_TRACK modes.";
++                    return [];
++                }
++                var removeCount = new[] { translation, rotation, scale }.Count( mode => mode == PapAnimationTransformComponentModes.RemoveTrack );
++                if( removeCount is > 0 and < 3 ) {
++                    error = "REMOVE_TRACK must be selected for translation, rotation, and scale together; it never means replacing an individual component with identity.";
++                    return [];
++                }
++                if( !names.Add( name ) ) {
++                    error = $"The component mask for {name} was specified more than once.";
++                    return [];
++                }
++                masks.Add( new ValidatedPapAnimationTransformComponentMask {
++                    BoneName = name,
++                    TranslationMode = translation,
++                    RotationMode = rotation,
++                    ScaleMode = scale,
++                } );
++            }
++            return masks.OrderBy( mask => mask.BoneName, StringComparer.OrdinalIgnoreCase ).ToArray();
++        }
++
++        private static string[] NormalizeNames( IEnumerable<string>? raw ) => ( raw ?? [] )
++            .Where( name => !string.IsNullOrWhiteSpace( name ) )
++            .Select( name => name.Trim() )
++            .Distinct( StringComparer.OrdinalIgnoreCase )
++            .OrderBy( name => name, StringComparer.OrdinalIgnoreCase )
++            .ToArray();
++
++        private static string? NormalizeMode( string? value ) {
++            var mode = value?.Trim().ToUpperInvariant();
++            return mode is PapAnimationTransformComponentModes.Source
++                or PapAnimationTransformComponentModes.TargetReference
++                or PapAnimationTransformComponentModes.Rest
++                or PapAnimationTransformComponentModes.RemoveTrack
++                ? mode
++                : null;
++        }
++
+         private static bool TryNormalizePath( string value, out string path ) {
+             path = string.Empty;
+             if( string.IsNullOrWhiteSpace( value ) ) return false;
+diff --git a/VFXEditor/Api/PapAnimationRebuildExecutor.cs b/VFXEditor/Api/PapAnimationRebuildExecutor.cs
+index 7bfb01d3..167f244d 100644
+--- a/VFXEditor/Api/PapAnimationRebuildExecutor.cs
++++ b/VFXEditor/Api/PapAnimationRebuildExecutor.cs
+@@ -3,6 +3,7 @@ using System;
+ using System.Collections.Generic;
+ using System.IO;
+ using System.Linq;
++using System.Numerics;
+ using System.Security.Cryptography;
+ using VfxEditor.Interop;
+ using VfxEditor.Interop.Havok;
+@@ -25,6 +26,89 @@ namespace VfxEditor.Api {
+             return Dalamud.Framework.RunOnFrameworkThread( () => ExecuteOnFrameworkThread( request ) ).GetAwaiter().GetResult();
+         }
+
++        public PapAnimationTransformAnalysisResponse Analyze( ValidatedPapAnimationTransformAnalysisRequest request ) {
++            if( Plugin.ResourceLoader == null || ResourceLoader.HavokInterleavedAnimationVtbl == IntPtr.Zero ) {
++                return AnalysisFailure( PapAnimationRebuildErrorCodes.NotInitialized, "VFXEditor's Havok runtime is not initialized." );
++            }
++
++            if( Dalamud.Framework.IsInFrameworkUpdateThread ) return AnalyzeOnFrameworkThread( request );
++            return Dalamud.Framework.RunOnFrameworkThread( () => AnalyzeOnFrameworkThread( request ) ).GetAwaiter().GetResult();
++        }
++
++        private static PapAnimationTransformAnalysisResponse AnalyzeOnFrameworkThread( ValidatedPapAnimationTransformAnalysisRequest request ) {
++            var sourceHash = HashFile( request.SourcePath );
++            var referenceHash = request.UseSkeletonRest ? string.Empty : HashFile( request.ReferencePath );
++            var workspace = string.Empty;
++            try {
++                workspace = Path.Combine( Path.GetTempPath(), "VFXEditor", "PapAnimationAnalysis", Guid.NewGuid().ToString( "N" ) );
++                Directory.CreateDirectory( workspace );
++                using var sourceStream = new FileStream( request.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read );
++                using var sourceReader = new BinaryReader( sourceStream );
++                var source = new PapFile( sourceReader, request.SourcePath, Path.Combine( workspace, "source.hkx" ), true, false );
++                PapFile? reference = null;
++                try {
++                    if( source.MotionData == null || !source.MotionData.TryLoadSkeletonFromLocal( request.TargetSkeletonPath )
++                        || !source.MotionData.TryGetMotion( request.MotionIndex, out var sourceMotion )
++                        || sourceMotion.Binding == null || sourceMotion.Animation == null || sourceMotion.HasMismatchedSkeleton() ) {
++                        return AnalysisFailure( PapAnimationRebuildErrorCodes.SourceBindingInvalid, "The source PAP binding is incompatible with the supplied target skeleton.", sourceHash, referenceHash );
++                    }
++                    var sourceKeys = GltfAnimation.SampleAnimation( source.MotionData.Skeleton, sourceMotion );
++                    IReadOnlyDictionary<string, AnimationKeys> referenceKeys;
++                    float? referenceDuration;
++                    if( request.UseSkeletonRest ) {
++                        referenceKeys = sourceKeys.ToDictionary(
++                            pair => pair.Key,
++                            pair => GltfAnimation.CreateReferencePoseKeys( source.MotionData.Skeleton, pair.Key, pair.Value.TranslationKeys.Keys ),
++                            StringComparer.OrdinalIgnoreCase );
++                        referenceDuration = sourceMotion.Duration;
++                    }
++                    else {
++                        using var referenceStream = new FileStream( request.ReferencePath, FileMode.Open, FileAccess.Read, FileShare.Read );
++                        using var referenceReader = new BinaryReader( referenceStream );
++                        reference = new PapFile( referenceReader, request.ReferencePath, Path.Combine( workspace, "reference.hkx" ), true, false );
++                        if( reference.MotionData == null || !reference.MotionData.TryLoadSkeletonFromLocal( request.TargetSkeletonPath )
++                            || !reference.MotionData.TryGetMotion( request.ReferenceMotionIndex, out var referenceMotion )
++                            || referenceMotion.Binding == null || referenceMotion.Animation == null || referenceMotion.HasMismatchedSkeleton() ) {
++                            return AnalysisFailure( PapAnimationRebuildErrorCodes.ReferenceBindingInvalid, "The reference PAP binding is incompatible with the supplied target skeleton.", sourceHash, referenceHash );
++                        }
++                        if( MathF.Abs( sourceMotion.Duration - referenceMotion.Duration ) > 0.001f ) {
++                            return AnalysisFailure( PapAnimationRebuildErrorCodes.ReferenceDurationMismatch, "The source and reference PAP motions have different durations; Dancy must select a matching reference motion.", sourceHash, referenceHash );
++                        }
++                        referenceKeys = GltfAnimation.SampleAnimation( reference.MotionData.Skeleton, referenceMotion );
++                        referenceDuration = referenceMotion.Duration;
++                    }
++                    var tracks = request.BoneNames.Select( name => CreateTrackAnalysis( name, sourceKeys, referenceKeys ) ).ToList();
++                    return new PapAnimationTransformAnalysisResponse {
++                        SchemaVersion = PapAnimationRebuildApi.SchemaVersion,
++                        ApiVersion = PapAnimationRebuildApi.ApiVersion,
++                        VfxEditorVersion = VfxEditorVersion(),
++                        Success = true,
++                        SourceSha256 = sourceHash,
++                        ReferenceSha256 = referenceHash,
++                        ReferenceKind = request.UseSkeletonRest ? "SKELETON_REST" : "PAP",
++                        MotionIndex = request.MotionIndex,
++                        ReferenceMotionIndex = request.UseSkeletonRest ? null : request.ReferenceMotionIndex,
++                        SourceDurationSeconds = sourceMotion.Duration,
++                        ReferenceDurationSeconds = referenceDuration,
++                        Tracks = tracks,
++                    };
++                }
++                finally {
++                    source.Dispose();
++                    reference?.Dispose();
++                }
++            }
++            catch( Exception exception ) {
++                return AnalysisFailure( PapAnimationRebuildErrorCodes.InternalError, exception.Message, sourceHash, referenceHash );
++            }
++            finally {
++                if( !string.IsNullOrEmpty( workspace ) && Directory.Exists( workspace ) ) {
++                    try { Directory.Delete( workspace, true ); }
++                    catch( Exception ) { }
++                }
++            }
++        }
++
+         private static PapAnimationRebuildResponse ExecuteOnFrameworkThread( ValidatedPapAnimationRebuildRequest request ) {
+             var cleanupWarnings = new List<string>();
+             var sourceHash = HashFile( request.SourcePath );
+@@ -65,12 +149,17 @@ namespace VfxEditor.Api {
+                     }
+
+                     var selection = SelectExcludedTracks( motion, request.ExcludedBoneNames );
++                    var componentMasks = request.ComponentMasks.Where( mask => !mask.RemovesTrack ).ToArray();
++                    var componentError = ValidateComponentMasks( selection.SourceTrackNames, componentMasks );
++                    if( componentError != null ) {
++                        return Complete( Failure( PapAnimationRebuildErrorCodes.ComponentMaskInvalid, componentError, sourceHash, request.MotionIndex, string.Empty, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
++                    }
+                     var motionName = source.Animations.FirstOrDefault( animation => animation.HavokIndex == request.MotionIndex )?.GetName();
+                     if( string.IsNullOrWhiteSpace( motionName ) ) motionName = $"havok-{request.MotionIndex}";
+-                    if( selection.ActuallyExcluded.Count == 0 ) {
++                    if( selection.ActuallyExcluded.Count == 0 && componentMasks.Length == 0 ) {
+                         return Complete( Failure(
+                             PapAnimationRebuildErrorCodes.NoApplicableExclusions,
+-                            "None of the requested bone names maps to one animated transform track in the selected motion.",
++                            "None of the requested bone names or component masks maps to one animated transform track in the selected motion.",
+                             sourceHash,
+                             request.MotionIndex,
+                             motionName,
+@@ -80,6 +169,41 @@ namespace VfxEditor.Api {
+                             selection.Skipped ) );
+                     }
+
++                    Dictionary<string, AnimationKeys>? sourceKeys = null;
++                    Dictionary<string, AnimationKeys>? referenceKeys = null;
++                    IReadOnlyDictionary<string, AnimationComponentOverride>? componentOverrides = null;
++                    var referenceHash = string.Empty;
++                    float? referenceDuration = null;
++                    if( componentMasks.Length > 0 ) {
++                        sourceKeys = GltfAnimation.SampleAnimation( source.MotionData.Skeleton, motion );
++                        if( componentMasks.Any( mask => mask.RequiresReference ) ) {
++                            referenceHash = HashFile( request.ReferencePath );
++                            using var referenceStream = new FileStream( request.ReferencePath, FileMode.Open, FileAccess.Read, FileShare.Read );
++                            using var referenceReader = new BinaryReader( referenceStream );
++                            var reference = new PapFile( referenceReader, request.ReferencePath, Path.Combine( workspace, "reference.hkx" ), true, false );
++                            try {
++                                if( reference.MotionData == null || !reference.MotionData.TryLoadSkeletonFromLocal( request.TargetSkeletonPath ) ) {
++                                    return Complete( Failure( PapAnimationRebuildErrorCodes.ReferenceBindingInvalid, "The reference PAP could not load the target skeleton.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
++                                }
++                                if( !reference.MotionData.TryGetMotion( request.ReferenceMotionIndex, out var referenceMotion ) ) {
++                                    return Complete( Failure( PapAnimationRebuildErrorCodes.ReferenceMotionNotFound, $"Reference Havok motion index {request.ReferenceMotionIndex} does not exist in the reference PAP.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
++                                }
++                                if( referenceMotion.Binding == null || referenceMotion.Animation == null || referenceMotion.HasMismatchedSkeleton() ) {
++                                    return Complete( Failure( PapAnimationRebuildErrorCodes.ReferenceBindingInvalid, "The reference PAP binding is incompatible with the supplied target skeleton.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
++                                }
++                                if( MathF.Abs( motion.Duration - referenceMotion.Duration ) > 0.001f ) {
++                                    return Complete( Failure( PapAnimationRebuildErrorCodes.ReferenceDurationMismatch, "The source and reference PAP motions have different durations; Dancy must select a matching reference motion.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
++                                }
++                                referenceDuration = referenceMotion.Duration;
++                                referenceKeys = GltfAnimation.SampleAnimation( reference.MotionData.Skeleton, referenceMotion );
++                            }
++                            finally {
++                                reference.Dispose();
++                            }
++                        }
++                        componentOverrides = BuildComponentOverrides( source.MotionData.Skeleton, sourceKeys, referenceKeys, componentMasks );
++                    }
++
+                     var gltfPath = Path.Combine( workspace, "motion.gltf" );
+                     try {
+                         GltfAnimation.ExportAnimation(
+@@ -87,7 +211,8 @@ namespace VfxEditor.Api {
+                             [motionName],
+                             [motion],
+                             true,
+-                            gltfPath );
++                            gltfPath,
++                            componentOverrides );
+                     }
+                     catch( Exception exception ) {
+                         return Complete( Failure( PapAnimationRebuildErrorCodes.ExportFailed, exception.Message, sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, motion.Duration, request.ExcludedBoneNames, selection.Skipped ) );
+@@ -122,7 +247,11 @@ namespace VfxEditor.Api {
+                         sourceHash,
+                         motionName,
+                         selection,
+-                        motion.Duration );
++                        motion.Duration,
++                        sourceKeys,
++                        referenceKeys,
++                        referenceHash,
++                        referenceDuration );
+                 }
+                 finally {
+                     source.Dispose();
+@@ -160,7 +289,11 @@ namespace VfxEditor.Api {
+             string sourceHash,
+             string motionName,
+             ExclusionSelection selection,
+-            float sourceDuration ) {
++            float sourceDuration,
++            IReadOnlyDictionary<string, AnimationKeys>? sourceKeys,
++            IReadOnlyDictionary<string, AnimationKeys>? referenceKeys,
++            string referenceHash,
++            float? referenceDuration ) {
+             var validation = new PapAnimationRebuildStructuralValidation();
+             try {
+                 using var stream = new FileStream( outputPath, FileMode.Open, FileAccess.Read, FileShare.Read );
+@@ -181,8 +314,30 @@ namespace VfxEditor.Api {
+                     var outputNames = TrackNames( motion );
+                     validation.ExpectedTracksRemoved = selection.ActuallyExcluded.All( name => !outputNames.Contains( name, StringComparer.OrdinalIgnoreCase) )
+                         && motion.Binding->TransformTrackToBoneIndices.Length == selection.SourceTrackCount - selection.ActuallyExcluded.Count;
+-                    if( !validation.BindingValid || !validation.ExpectedTracksRemoved ) {
+-                        return Failure( PapAnimationRebuildErrorCodes.OutputValidationFailed, "The generated PAP failed binding or expected-track validation.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, sourceDuration, request.ExcludedBoneNames, selection.Skipped, validation );
++                    validation.NoUnexpectedTracksRemoved = selection.SourceTrackNames
++                        .Where( name => !selection.ActuallyExcluded.Contains( name, StringComparer.OrdinalIgnoreCase ) )
++                        .OrderBy( name => name, StringComparer.OrdinalIgnoreCase )
++                        .SequenceEqual( outputNames.OrderBy( name => name, StringComparer.OrdinalIgnoreCase ), StringComparer.OrdinalIgnoreCase );
++                    var componentEvidence = new List<PapAnimationComponentMaskEvidence>();
++                    validation.ComponentMasksValid = true;
++                    validation.NoUnexpectedTransformChanges = true;
++                    if( sourceKeys != null ) {
++                        var outputKeys = GltfAnimation.SampleAnimation( output.MotionData.Skeleton, motion );
++                        componentEvidence = CreateComponentEvidence( request.ComponentMasks.Where( mask => !mask.RemovesTrack ), sourceKeys, referenceKeys, outputKeys, output.MotionData.Skeleton );
++                        validation.ComponentMasksValid = componentEvidence.All( evidence => evidence.TranslationMatchesSelectedSource
++                            && evidence.RotationMatchesSelectedSource && evidence.ScaleMatchesSelectedSource );
++                        validation.NoUnexpectedTransformChanges = NoUnexpectedTransformChanges(
++                            sourceKeys,
++                            outputKeys,
++                            selection.ActuallyExcluded,
++                            request.ComponentMasks.Where( mask => !mask.RemovesTrack ) );
++                    }
++                    if( !validation.BindingValid || !validation.ExpectedTracksRemoved || !validation.NoUnexpectedTracksRemoved
++                        || !validation.ComponentMasksValid || !validation.NoUnexpectedTransformChanges ) {
++                        var code = !validation.ComponentMasksValid || !validation.NoUnexpectedTransformChanges
++                            ? PapAnimationRebuildErrorCodes.ComponentValidationFailed
++                            : PapAnimationRebuildErrorCodes.OutputValidationFailed;
++                        return Failure( code, "The generated PAP failed binding, expected-track, or component-transform validation.", sourceHash, request.MotionIndex, motionName, selection.SourceTrackCount, sourceDuration, request.ExcludedBoneNames, selection.Skipped, validation );
+                     }
+
+                     return new PapAnimationRebuildResponse {
+@@ -195,11 +350,17 @@ namespace VfxEditor.Api {
+                         MotionName = motionName,
+                         SourceTrackCount = selection.SourceTrackCount,
+                         OutputTrackCount = motion.Binding->TransformTrackToBoneIndices.Length,
++                        SourceTrackNames = [.. selection.SourceTrackNames],
++                        OutputTrackNames = outputNames,
+                         SourceDurationSeconds = sourceDuration,
+                         OutputDurationSeconds = motion.Duration,
++                        ReferenceSha256 = referenceHash,
++                        ReferenceMotionIndex = referenceHash.Length > 0 ? request.ReferenceMotionIndex : null,
++                        ReferenceDurationSeconds = referenceDuration,
+                         RequestedExcludedBoneNames = [.. request.ExcludedBoneNames],
+                         ActuallyExcludedBoneNames = [.. selection.ActuallyExcluded],
+                         SkippedBones = selection.Skipped,
++                        ComponentMaskEvidence = componentEvidence,
+                         StructuralValidation = validation,
+                     };
+                 }
+@@ -212,6 +373,226 @@ namespace VfxEditor.Api {
+             }
+         }
+
++        private static string? ValidateComponentMasks( IReadOnlyList<string> sourceTrackNames, IReadOnlyList<ValidatedPapAnimationTransformComponentMask> masks ) {
++            foreach( var mask in masks ) {
++                var count = sourceTrackNames.Count( name => string.Equals( name, mask.BoneName, StringComparison.OrdinalIgnoreCase ) );
++                if( count != 1 ) return $"Component mask {mask.BoneName} must resolve to exactly one animated source transform track; found {count}.";
++            }
++            return null;
++        }
++
++        private static IReadOnlyDictionary<string, AnimationComponentOverride> BuildComponentOverrides(
++            FFXIVClientStructs.Havok.Animation.Rig.hkaSkeleton* skeleton,
++            IReadOnlyDictionary<string, AnimationKeys> source,
++            IReadOnlyDictionary<string, AnimationKeys>? reference,
++            IReadOnlyList<ValidatedPapAnimationTransformComponentMask> masks ) {
++            var result = new Dictionary<string, AnimationComponentOverride>( StringComparer.OrdinalIgnoreCase );
++            foreach( var mask in masks ) {
++                var sourceKeys = FindKeys( source, mask.BoneName )
++                    ?? throw new ArgumentException( $"The source samples do not contain {mask.BoneName}." );
++                var referenceKeys = mask.RequiresReference
++                    ? FindKeys( reference, mask.BoneName ) ?? throw new ArgumentException( $"The reference samples do not contain {mask.BoneName}." )
++                    : null;
++                var rest = mask.TranslationMode == PapAnimationTransformComponentModes.Rest
++                           || mask.RotationMode == PapAnimationTransformComponentModes.Rest
++                           || mask.ScaleMode == PapAnimationTransformComponentModes.Rest
++                    ? GltfAnimation.CreateReferencePoseKeys( skeleton, mask.BoneName, sourceKeys.TranslationKeys.Keys )
++                    : null;
++                result[mask.BoneName] = new AnimationComponentOverride {
++                    TranslationKeys = SelectVectorKeys( mask.TranslationMode, referenceKeys, rest, sourceKeys, static keys => keys.TranslationKeys ),
++                    RotationKeys = SelectQuaternionKeys( mask.RotationMode, referenceKeys, rest, sourceKeys, static keys => keys.RotateKeys ),
++                    ScaleKeys = SelectVectorKeys( mask.ScaleMode, referenceKeys, rest, sourceKeys, static keys => keys.ScaleKeys ),
++                };
++            }
++            return result;
++        }
++
++        private static List<PapAnimationComponentMaskEvidence> CreateComponentEvidence(
++            IEnumerable<ValidatedPapAnimationTransformComponentMask> masks,
++            IReadOnlyDictionary<string, AnimationKeys> source,
++            IReadOnlyDictionary<string, AnimationKeys>? reference,
++            IReadOnlyDictionary<string, AnimationKeys> output,
++            FFXIVClientStructs.Havok.Animation.Rig.hkaSkeleton* skeleton ) {
++            var result = new List<PapAnimationComponentMaskEvidence>();
++            foreach( var mask in masks ) {
++                var sourceKeys = FindKeys( source, mask.BoneName )!;
++                var outputKeys = FindKeys( output, mask.BoneName );
++                var referenceKeys = FindKeys( reference, mask.BoneName );
++                var rest = mask.TranslationMode == PapAnimationTransformComponentModes.Rest
++                           || mask.RotationMode == PapAnimationTransformComponentModes.Rest
++                           || mask.ScaleMode == PapAnimationTransformComponentModes.Rest
++                    ? GltfAnimation.CreateReferencePoseKeys( skeleton, mask.BoneName, sourceKeys.TranslationKeys.Keys )
++                    : null;
++                result.Add( new PapAnimationComponentMaskEvidence {
++                    BoneName = mask.BoneName,
++                    TranslationMode = mask.TranslationMode,
++                    RotationMode = mask.RotationMode,
++                    ScaleMode = mask.ScaleMode,
++                    TranslationMatchesSelectedSource = outputKeys != null && MatchesVectorKeys( outputKeys.TranslationKeys, SelectVectorKeys( mask.TranslationMode, referenceKeys, rest, sourceKeys, static keys => keys.TranslationKeys ) ?? sourceKeys.TranslationKeys ),
++                    RotationMatchesSelectedSource = outputKeys != null && MatchesQuaternionKeys( outputKeys.RotateKeys, SelectQuaternionKeys( mask.RotationMode, referenceKeys, rest, sourceKeys, static keys => keys.RotateKeys ) ?? sourceKeys.RotateKeys ),
++                    ScaleMatchesSelectedSource = outputKeys != null && MatchesVectorKeys( outputKeys.ScaleKeys, SelectVectorKeys( mask.ScaleMode, referenceKeys, rest, sourceKeys, static keys => keys.ScaleKeys ) ?? sourceKeys.ScaleKeys ),
++                    Analysis = CreateTrackAnalysis(
++                        mask.BoneName,
++                        source,
++                        rest is null ? reference : new Dictionary<string, AnimationKeys>( StringComparer.OrdinalIgnoreCase ) { [mask.BoneName] = rest } ),
++                    Result = outputKeys == null ? null : CreateSummary( outputKeys ),
++                } );
++            }
++            return result;
++        }
++
++        private static bool NoUnexpectedTransformChanges(
++            IReadOnlyDictionary<string, AnimationKeys> source,
++            IReadOnlyDictionary<string, AnimationKeys> output,
++            IEnumerable<string> excluded,
++            IEnumerable<ValidatedPapAnimationTransformComponentMask> masks ) {
++            var excludedNames = new HashSet<string>( excluded, StringComparer.OrdinalIgnoreCase );
++            var byName = masks.ToDictionary( mask => mask.BoneName, StringComparer.OrdinalIgnoreCase );
++            foreach( var (name, sourceKeys) in source ) {
++                if( excludedNames.Contains( name ) ) continue;
++                var outputKeys = FindKeys( output, name );
++                if( outputKeys == null ) return false;
++                if( !byName.TryGetValue( name, out var mask ) ) {
++                    if( !MatchesVectorKeys( outputKeys.TranslationKeys, sourceKeys.TranslationKeys )
++                        || !MatchesQuaternionKeys( outputKeys.RotateKeys, sourceKeys.RotateKeys )
++                        || !MatchesVectorKeys( outputKeys.ScaleKeys, sourceKeys.ScaleKeys ) ) return false;
++                    continue;
++                }
++
++                if( mask.TranslationMode == PapAnimationTransformComponentModes.Source
++                    && !MatchesVectorKeys( outputKeys.TranslationKeys, sourceKeys.TranslationKeys ) ) return false;
++                if( mask.RotationMode == PapAnimationTransformComponentModes.Source
++                    && !MatchesQuaternionKeys( outputKeys.RotateKeys, sourceKeys.RotateKeys ) ) return false;
++                if( mask.ScaleMode == PapAnimationTransformComponentModes.Source
++                    && !MatchesVectorKeys( outputKeys.ScaleKeys, sourceKeys.ScaleKeys ) ) return false;
++            }
++            return true;
++        }
++
++        private static PapAnimationTransformTrackAnalysis CreateTrackAnalysis(
++            string boneName,
++            IReadOnlyDictionary<string, AnimationKeys> source,
++            IReadOnlyDictionary<string, AnimationKeys>? reference ) {
++            var sourceKeys = FindKeys( source, boneName );
++            var referenceKeys = FindKeys( reference, boneName );
++            return new PapAnimationTransformTrackAnalysis {
++                BoneName = boneName,
++                SourceTrackPresent = sourceKeys != null,
++                ReferenceTrackPresent = referenceKeys != null,
++                Source = sourceKeys == null ? null : CreateSummary( sourceKeys ),
++                Reference = referenceKeys == null ? null : CreateSummary( referenceKeys ),
++                SourceToReference = sourceKeys == null || referenceKeys == null ? null : CreateDifference( sourceKeys, referenceKeys ),
++            };
++        }
++
++        private static PapAnimationTransformTrackSummary CreateSummary( AnimationKeys keys ) {
++            var times = keys.TranslationKeys.Keys.OrderBy( time => time ).ToArray();
++            if( times.Length == 0 ) return new PapAnimationTransformTrackSummary();
++            var first = TransformValue( keys, times[0] );
++            var last = TransformValue( keys, times[^1] );
++            var translationRange = 0f;
++            var rotationRange = 0f;
++            var scaleRange = 0f;
++            foreach( var time in times ) {
++                var value = TransformValue( keys, time );
++                translationRange = Math.Max( translationRange, Vector3.Distance( ToTranslation( first ), ToTranslation( value ) ) );
++                rotationRange = Math.Max( rotationRange, RotationDifferenceDegrees( ToRotation( first ), ToRotation( value ) ) );
++                scaleRange = Math.Max( scaleRange, Vector3.Distance( ToScale( first ), ToScale( value ) ) );
++            }
++            return new PapAnimationTransformTrackSummary {
++                SampleCount = times.Length,
++                TranslationChanges = translationRange > 0.0001f,
++                RotationChanges = rotationRange > 0.1f,
++                ScaleChanges = scaleRange > 0.0001f,
++                TranslationRangeMagnitude = translationRange,
++                RotationRangeDegrees = rotationRange,
++                ScaleRangeMagnitude = scaleRange,
++                FirstSample = first,
++                LastSample = last,
++            };
++        }
++
++        private static PapAnimationTransformDifference CreateDifference( AnimationKeys source, AnimationKeys reference ) {
++            var sourceTimes = source.TranslationKeys.Keys.OrderBy( time => time ).ToArray();
++            if( sourceTimes.Length != reference.TranslationKeys.Count || sourceTimes.Any( time => !reference.TranslationKeys.ContainsKey( time ) ) ) {
++                throw new ArgumentException( "Source and reference samples do not share the same sample times." );
++            }
++            var translation = 0f;
++            var rotation = 0f;
++            var scale = 0f;
++            foreach( var time in sourceTimes ) {
++                var left = TransformValue( source, time );
++                var right = TransformValue( reference, time );
++                translation = Math.Max( translation, Vector3.Distance( ToTranslation( left ), ToTranslation( right ) ) );
++                rotation = Math.Max( rotation, RotationDifferenceDegrees( ToRotation( left ), ToRotation( right ) ) );
++                scale = Math.Max( scale, Vector3.Distance( ToScale( left ), ToScale( right ) ) );
++            }
++            return new PapAnimationTransformDifference {
++                MaximumTranslationDifference = translation,
++                MaximumRotationDifferenceDegrees = rotation,
++                MaximumScaleDifference = scale,
++            };
++        }
++
++        private static AnimationKeys? FindKeys( IReadOnlyDictionary<string, AnimationKeys>? source, string name ) {
++            if( source == null ) return null;
++            if( source.TryGetValue( name, out var exact ) ) return exact;
++            return source.FirstOrDefault( pair => string.Equals( pair.Key, name, StringComparison.OrdinalIgnoreCase ) ).Value;
++        }
++
++        private static IReadOnlyDictionary<float, Vector3>? SelectVectorKeys(
++            string mode,
++            AnimationKeys? reference,
++            AnimationKeys? rest,
++            AnimationKeys source,
++            Func<AnimationKeys, IReadOnlyDictionary<float, Vector3>> selector ) => mode switch {
++                PapAnimationTransformComponentModes.Source => null,
++                PapAnimationTransformComponentModes.TargetReference => selector( reference ?? throw new ArgumentException( "TARGET_REFERENCE requires sampled reference transforms." ) ),
++                PapAnimationTransformComponentModes.Rest => selector( rest ?? throw new ArgumentException( "REST requires a skeleton reference pose." ) ),
++                _ => throw new ArgumentException( $"Unsupported vector component mode {mode}." ),
++            };
++
++        private static IReadOnlyDictionary<float, Quaternion>? SelectQuaternionKeys(
++            string mode,
++            AnimationKeys? reference,
++            AnimationKeys? rest,
++            AnimationKeys source,
++            Func<AnimationKeys, IReadOnlyDictionary<float, Quaternion>> selector ) => mode switch {
++                PapAnimationTransformComponentModes.Source => null,
++                PapAnimationTransformComponentModes.TargetReference => selector( reference ?? throw new ArgumentException( "TARGET_REFERENCE requires sampled reference transforms." ) ),
++                PapAnimationTransformComponentModes.Rest => selector( rest ?? throw new ArgumentException( "REST requires a skeleton reference pose." ) ),
++                _ => throw new ArgumentException( $"Unsupported rotation component mode {mode}." ),
++            };
++
++        private static bool MatchesVectorKeys( IReadOnlyDictionary<float, Vector3> actual, IReadOnlyDictionary<float, Vector3> expected )
++            => actual.Count == expected.Count && actual.All( pair => expected.TryGetValue( pair.Key, out var value ) && Vector3.Distance( pair.Value, value ) <= 0.005f );
++
++        private static bool MatchesQuaternionKeys( IReadOnlyDictionary<float, Quaternion> actual, IReadOnlyDictionary<float, Quaternion> expected )
++            => actual.Count == expected.Count && actual.All( pair => expected.TryGetValue( pair.Key, out var value ) && RotationDifferenceDegrees( pair.Value, value ) <= 0.5f );
++
++        private static PapAnimationTransformValue TransformValue( AnimationKeys keys, float time ) => new() {
++            TranslationX = keys.TranslationKeys[time].X,
++            TranslationY = keys.TranslationKeys[time].Y,
++            TranslationZ = keys.TranslationKeys[time].Z,
++            RotationX = keys.RotateKeys[time].X,
++            RotationY = keys.RotateKeys[time].Y,
++            RotationZ = keys.RotateKeys[time].Z,
++            RotationW = keys.RotateKeys[time].W,
++            ScaleX = keys.ScaleKeys[time].X,
++            ScaleY = keys.ScaleKeys[time].Y,
++            ScaleZ = keys.ScaleKeys[time].Z,
++        };
++
++        private static Vector3 ToTranslation( PapAnimationTransformValue value ) => new( value.TranslationX, value.TranslationY, value.TranslationZ );
++        private static Vector3 ToScale( PapAnimationTransformValue value ) => new( value.ScaleX, value.ScaleY, value.ScaleZ );
++        private static Quaternion ToRotation( PapAnimationTransformValue value ) => new( value.RotationX, value.RotationY, value.RotationZ, value.RotationW );
++        private static float RotationDifferenceDegrees( Quaternion left, Quaternion right ) {
++            var normalizedLeft = Quaternion.Normalize( left );
++            var normalizedRight = Quaternion.Normalize( right );
++            var dot = Math.Clamp( MathF.Abs( Quaternion.Dot( normalizedLeft, normalizedRight ) ), 0f, 1f );
++            return 2f * MathF.Acos( dot ) * ( 180f / MathF.PI );
++        }
++
+         private static ExclusionSelection SelectExcludedTracks( PapMotion motion, IReadOnlyList<string> requested ) {
+             var skeletonNames = new Dictionary<string, List<int>>( StringComparer.OrdinalIgnoreCase );
+             for( var index = 0; index < motion.Skeleton->Bones.Length; index++ ) {
+@@ -250,11 +631,11 @@ namespace VfxEditor.Api {
+                 excluded.Add( name );
+             }
+
+-            return new ExclusionSelection( motion.Binding->TransformTrackToBoneIndices.Length, excluded, skipped );
++            return new ExclusionSelection( motion.Binding->TransformTrackToBoneIndices.Length, excluded, skipped, TrackNames( motion ) );
+         }
+
+-        private static HashSet<string> TrackNames( PapMotion motion ) {
+-            var names = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
++        private static List<string> TrackNames( PapMotion motion ) {
++            var names = new List<string>();
+             for( var trackIndex = 0; trackIndex < motion.Binding->TransformTrackToBoneIndices.Length; trackIndex++ ) {
+                 var boneIndex = motion.Binding->TransformTrackToBoneIndices[trackIndex];
+                 if( boneIndex >= 0 && boneIndex < motion.Skeleton->Bones.Length ) names.Add( motion.Skeleton->Bones[boneIndex].Name.String );
+@@ -287,10 +668,22 @@ namespace VfxEditor.Api {
+             return result;
+         }
+
++        private static PapAnimationTransformAnalysisResponse AnalysisFailure(
++            string errorCode,
++            string error,
++            string sourceHash = "",
++            string referenceHash = "" ) {
++            var result = PapAnimationRebuildApi.AnalysisFailure( errorCode, error );
++            result.VfxEditorVersion = VfxEditorVersion();
++            result.SourceSha256 = sourceHash;
++            result.ReferenceSha256 = referenceHash;
++            return result;
++        }
++
+         private static string HashFile( string path ) => Convert.ToHexString( SHA256.HashData( File.ReadAllBytes( path ) ) );
+
+         internal static string VfxEditorVersion() => typeof( Plugin ).Assembly.GetName().Version?.ToString() ?? "unknown";
+
+-        private sealed record ExclusionSelection( int SourceTrackCount, List<string> ActuallyExcluded, List<PapAnimationRebuildSkippedBone> Skipped );
++        private sealed record ExclusionSelection( int SourceTrackCount, List<string> ActuallyExcluded, List<PapAnimationRebuildSkippedBone> Skipped, List<string> SourceTrackNames );
+     }
+ }
+diff --git a/VFXEditor/Api/PapAnimationRebuildIpc.cs b/VFXEditor/Api/PapAnimationRebuildIpc.cs
+index c4f74121..1d21ec79 100644
+--- a/VFXEditor/Api/PapAnimationRebuildIpc.cs
++++ b/VFXEditor/Api/PapAnimationRebuildIpc.cs
+@@ -5,19 +5,23 @@ namespace VfxEditor.Api {
+     internal sealed class PapAnimationRebuildIpc {
+         private readonly ICallGateProvider<string, string> Rebuild;
+         private readonly ICallGateProvider<string> Capabilities;
++        private readonly ICallGateProvider<string, string> Analyze;
+         private readonly PapAnimationRebuildService Service;
+
+         public PapAnimationRebuildIpc() {
+             Service = new PapAnimationRebuildService( new PapAnimationRebuildExecutor() );
+             Rebuild = Dalamud.PluginInterface.GetIpcProvider<string, string>( PapAnimationRebuildApi.RebuildEndpoint );
+             Capabilities = Dalamud.PluginInterface.GetIpcProvider<string>( PapAnimationRebuildApi.CapabilitiesEndpoint );
++            Analyze = Dalamud.PluginInterface.GetIpcProvider<string, string>( PapAnimationRebuildApi.AnalyzeEndpoint );
+             Rebuild.RegisterFunc( Service.Handle );
+             Capabilities.RegisterFunc( GetCapabilities );
++            Analyze.RegisterFunc( Service.HandleAnalysis );
+         }
+
+         public void Dispose() {
+             Rebuild.UnregisterFunc();
+             Capabilities.UnregisterFunc();
++            Analyze.UnregisterFunc();
+         }
+
+         private static string GetCapabilities() => PapAnimationRebuildApi.Serialize( new PapAnimationRebuildCapabilities {
+diff --git a/VFXEditor/Api/PapAnimationRebuildService.cs b/VFXEditor/Api/PapAnimationRebuildService.cs
+index 79979410..b6f2188d 100644
+--- a/VFXEditor/Api/PapAnimationRebuildService.cs
++++ b/VFXEditor/Api/PapAnimationRebuildService.cs
+@@ -5,6 +5,7 @@ using System.Threading;
+ namespace VfxEditor.Api {
+     public interface IPapAnimationRebuildExecutor {
+         PapAnimationRebuildResponse Execute( ValidatedPapAnimationRebuildRequest request );
++        PapAnimationTransformAnalysisResponse Analyze( ValidatedPapAnimationTransformAnalysisRequest request );
+     }
+
+     /// <summary>Owns request validation and ensures one native rebuild runs at a time.</summary>
+@@ -36,5 +37,28 @@ namespace VfxEditor.Api {
+                 Volatile.Write( ref IsBusy, 0 );
+             }
+         }
++
++        /// <summary>Runs native sampling only. It does not create or modify a PAP.</summary>
++        public string HandleAnalysis( string requestJson ) {
++            if( !PapAnimationRebuildApi.TryDeserializeAnalysisRequest( requestJson, out var request, out var response ) ) return PapAnimationRebuildApi.Serialize( response );
++            if( !PapAnimationRebuildRequestValidator.TryValidateAnalysis( request, out var valid, out response ) ) return PapAnimationRebuildApi.Serialize( response );
++            if( !File.Exists( valid.SourcePath ) ) return PapAnimationRebuildApi.Serialize( PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.SourceNotFound, "The source PAP does not exist." ) );
++            if( !valid.UseSkeletonRest && !File.Exists( valid.ReferencePath ) ) return PapAnimationRebuildApi.Serialize( PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.ReferenceNotFound, "The reference PAP does not exist." ) );
++            if( !File.Exists( valid.TargetSkeletonPath ) ) return PapAnimationRebuildApi.Serialize( PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.SkeletonNotFound, "The target SKLB does not exist." ) );
++
++            if( Interlocked.CompareExchange( ref IsBusy, 1, 0 ) != 0 ) return PapAnimationRebuildApi.Serialize( PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.Busy, "Another PAP animation operation is already in progress." ) );
++            try {
++                response = Executor.Analyze( valid ) ?? PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InternalError, "The PAP analysis executor returned no result." );
++                response.SchemaVersion = PapAnimationRebuildApi.SchemaVersion;
++                response.ApiVersion = PapAnimationRebuildApi.ApiVersion;
++                return PapAnimationRebuildApi.Serialize( response );
++            }
++            catch( Exception exception ) {
++                return PapAnimationRebuildApi.Serialize( PapAnimationRebuildApi.AnalysisFailure( PapAnimationRebuildErrorCodes.InternalError, exception.Message ) );
++            }
++            finally {
++                Volatile.Write( ref IsBusy, 0 );
++            }
++        }
+     }
+ }
+diff --git a/VFXEditor/Utils/Gltf/GltfAnimation.cs b/VFXEditor/Utils/Gltf/GltfAnimation.cs
+index 82c888c6..f98b3488 100644
+--- a/VFXEditor/Utils/Gltf/GltfAnimation.cs
++++ b/VFXEditor/Utils/Gltf/GltfAnimation.cs
+@@ -24,10 +24,27 @@ namespace VfxEditor.Utils.Gltf {
+         public readonly Dictionary<float, Vector3> TranslationKeys = [];
+     }
+
++    /// <summary>
++    /// Optional component replacement data applied after sampling a source
++    /// motion and before it is written to the temporary glTF. A null component
++    /// intentionally leaves the source component untouched.
++    /// </summary>
++    public sealed class AnimationComponentOverride {
++        public IReadOnlyDictionary<float, Vector3>? TranslationKeys { get; init; }
++        public IReadOnlyDictionary<float, Quaternion>? RotationKeys { get; init; }
++        public IReadOnlyDictionary<float, Vector3>? ScaleKeys { get; init; }
++    }
++
+     // There's something weird going on with the direct roots (n_hara, n_throw)
+
+     public static unsafe class GltfAnimation {
+-        public static void ExportAnimation( hkaSkeleton* skeleton, List<string> animationNames, List<PapMotion> motions, bool skipUnanimated, string path ) {
++        public static void ExportAnimation(
++            hkaSkeleton* skeleton,
++            List<string> animationNames,
++            List<PapMotion> motions,
++            bool skipUnanimated,
++            string path,
++            IReadOnlyDictionary<string, AnimationComponentOverride>? componentOverrides = null ) {
+             var scene = new SceneBuilder();
+
+             var names = new List<string>();
+@@ -71,16 +88,10 @@ namespace VfxEditor.Utils.Gltf {
+                 var animationName = animationNames[animIdx];
+                 var motion = motions[animIdx];
+
+-                var nameToKeys = new Dictionary<string, AnimationKeys>();
+-                for( var i = 0; i < skeleton->Bones.Length; i++ ) {
+-                    nameToKeys[skeleton->Bones[i].Name.String] = new();
+-                }
++                var nameToKeys = SampleAnimation( skeleton, motion );
++                ApplyComponentOverrides( nameToKeys, componentOverrides );
+
+                 var animation = model.UseAnimation( animationName );
+-                var totalFrames = Math.Max( 1, ( int )MathF.Round( motion.Duration * 30f ) + 1 );
+-                for( var frame = 0; frame < totalFrames; frame++ ) {
+-                    ExportKeys( nameToKeys, names, motion, frame * ( 1 / 30f ) );
+-                }
+
+                 var unanimated = skipUnanimated ? motion.GetUnanimatedBones() : null;
+
+@@ -106,6 +117,69 @@ namespace VfxEditor.Utils.Gltf {
+             Dalamud.Log( $"Saved GLTF to: {path}" );
+         }
+
++        /// <summary>
++        /// Samples local animation transforms at the same 30 fps points used by
++        /// the existing glTF exporter. Sampling restores the motion's local
++        /// time before returning and does not mutate PAP data.
++        /// </summary>
++        public static Dictionary<string, AnimationKeys> SampleAnimation( hkaSkeleton* skeleton, PapMotion motion ) {
++            var names = new List<string>();
++            var nameToKeys = new Dictionary<string, AnimationKeys>( StringComparer.Ordinal );
++            for( var index = 0; index < skeleton->Bones.Length; index++ ) {
++                var name = skeleton->Bones[index].Name.String;
++                names.Add( name );
++                nameToKeys[name] = new AnimationKeys();
++            }
++
++            var totalFrames = Math.Max( 1, ( int )MathF.Round( motion.Duration * 30f ) + 1 );
++            for( var frame = 0; frame < totalFrames; frame++ ) {
++                ExportKeys( nameToKeys, names, motion, frame * ( 1 / 30f ) );
++            }
++            return nameToKeys;
++        }
++
++        public static AnimationKeys CreateReferencePoseKeys( hkaSkeleton* skeleton, string boneName, IEnumerable<float> times ) {
++            var index = -1;
++            for( var candidate = 0; candidate < skeleton->Bones.Length; candidate++ ) {
++                if( string.Equals( skeleton->Bones[candidate].Name.String, boneName, StringComparison.Ordinal ) ) {
++                    index = candidate;
++                    break;
++                }
++            }
++            if( index < 0 ) throw new ArgumentException( $"The skeleton does not contain {boneName}.", nameof( boneName ) );
++            var pose = skeleton->ReferencePose[index];
++            var translation = new Vector3( pose.Translation.X, pose.Translation.Y, pose.Translation.Z );
++            var rotation = new Quaternion( pose.Rotation.X, pose.Rotation.Y, pose.Rotation.Z, pose.Rotation.W );
++            var scale = new Vector3( pose.Scale.X, pose.Scale.Y, pose.Scale.Z );
++            var result = new AnimationKeys();
++            foreach( var time in times ) {
++                result.TranslationKeys[time] = translation;
++                result.RotateKeys[time] = rotation;
++                result.ScaleKeys[time] = scale;
++            }
++            return result;
++        }
++
++        private static void ApplyComponentOverrides(
++            IReadOnlyDictionary<string, AnimationKeys> source,
++            IReadOnlyDictionary<string, AnimationComponentOverride>? overrides ) {
++            if( overrides == null ) return;
++            foreach( var (boneName, replacement) in overrides ) {
++                if( !source.TryGetValue( boneName, out var keys ) ) throw new ArgumentException( $"The sampled source skeleton does not contain {boneName}." );
++                if( replacement.TranslationKeys != null ) ReplaceKeys( keys.TranslationKeys, replacement.TranslationKeys, boneName, "translation" );
++                if( replacement.RotationKeys != null ) ReplaceKeys( keys.RotateKeys, replacement.RotationKeys, boneName, "rotation" );
++                if( replacement.ScaleKeys != null ) ReplaceKeys( keys.ScaleKeys, replacement.ScaleKeys, boneName, "scale" );
++            }
++        }
++
++        private static void ReplaceKeys<T>( Dictionary<float, T> destination, IReadOnlyDictionary<float, T> replacement, string boneName, string component ) {
++            if( destination.Count != replacement.Count || destination.Keys.Except( replacement.Keys ).Any() ) {
++                throw new ArgumentException( $"The replacement {component} keys for {boneName} do not match the source sample times." );
++            }
++            destination.Clear();
++            foreach( var (time, value) in replacement ) destination[time] = value;
++        }
++
+         private static void ExportKeys( Dictionary<string, AnimationKeys> nameToKeys, List<string> names, PapMotion motion, float time ) {
+             var resetTime = motion.AnimationControl->LocalTime;
+             motion.AnimationControl->LocalTime = time;

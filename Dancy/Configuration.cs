@@ -1,7 +1,5 @@
 using Dalamud.Configuration;
 using System;
-using System.Collections.Generic;
-using Dancy.Animation;
 
 namespace Dancy;
 
@@ -14,10 +12,6 @@ public class Configuration : IPluginConfiguration
     public bool ShowNonLoopTargets { get; set; }
 
     public string PenumbraPath { get; set; } = string.Empty;
-
-    // Persisted user intent only. Native PAP track indices are rediscovered
-    // from the selected source binding whenever a derivative is generated.
-    public List<BoneMask> BoneMasks { get; set; } = [];
 
     // Debug-only DAB bridge identity. The protected token is DPAPI encrypted by AgentBridge.
     public string AgentBridgeInstanceId { get; set; } = Guid.NewGuid().ToString("N");

@@ -51,7 +51,6 @@ public class ConfigWindow : Window, IDisposable
         }
 
         ImGui.TextDisabled("Normal overrides use loop-capable targets by default.");
-        ImGui.TextDisabled("Cross-rig skeletal retargeting is not enabled in this build.");
 
 #if DEBUG
         ImGui.Separator();

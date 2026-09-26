@@ -195,6 +195,8 @@ internal sealed class DancyLiveSelfTestRunner
                         throw new InvalidOperationException("Updated metadata retained obsolete target mappings.");
                     return $"Stable ID {plan.OverrideId}; {files.Count} updated mapping(s).";
                 }, fixture.MetaPath);
+
+                RunCase(cases, "Fixture source integrity", "integrity", "The source PAP bytes remain unchanged after normal create and update operations.", () => VerifyFixtureSourceIntegrity(fixture), fixture.ModFolder);
             }
         }
 
@@ -240,6 +242,7 @@ internal sealed class DancyLiveSelfTestRunner
 
         var target = OnFramework(SelectFixtureTarget);
         var sourceBytes = OnFramework(() => ReadGameFile(target.TargetPaths[0]));
+        var sourceSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(sourceBytes));
         var sourceRelativePath = "fixture/source.pap";
         File.WriteAllBytes(Path.Combine(modFolder, "fixture", "source.pap"), sourceBytes);
 
@@ -281,6 +284,7 @@ internal sealed class DancyLiveSelfTestRunner
             MetaPath = metaPath,
             SourceGamePath = sourceGamePath,
             SourceRelativePath = sourceRelativePath,
+            SourceSha256 = sourceSha256,
             TargetTimelineKey = target.TimelineKey,
             TargetName = target.Name,
             TargetCommand = target.Command,
@@ -343,6 +347,16 @@ internal sealed class DancyLiveSelfTestRunner
             if (applied)
                 _ = OnFramework(() => removeTemporarySettings.Invoke(playerIndex, FixtureDirectory, TemporarySettingKey).ToString());
         }
+    }
+
+    private static string VerifyFixtureSourceIntegrity(FixtureContext fixture)
+    {
+        if (!PathSafety.TryResolveInsideRoot(fixture.ModFolder, fixture.SourceRelativePath, out var sourcePath))
+            throw new InvalidOperationException("Fixture source PAP path was unsafe.");
+        var current = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(sourcePath)));
+        if (!string.Equals(current, fixture.SourceSha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Normal Dancy operations changed the fixture source PAP bytes.");
+        return "Fixture source PAP SHA-256 is unchanged.";
     }
 
     private static string CleanupFixture(FixtureContext fixture)
@@ -480,6 +494,7 @@ internal sealed class DancyLiveSelfTestRunner
         public string MetaPath { get; init; } = string.Empty;
         public string SourceGamePath { get; init; } = string.Empty;
         public string SourceRelativePath { get; init; } = string.Empty;
+        public string SourceSha256 { get; init; } = string.Empty;
         public string TargetTimelineKey { get; init; } = string.Empty;
         public string TargetName { get; init; } = string.Empty;
         public string TargetCommand { get; init; } = string.Empty;

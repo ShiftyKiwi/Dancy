@@ -9,7 +9,9 @@ public class DomainSafetyTests
     [Theory]
     [InlineData("c0101", "Midlander", "Male")]
     [InlineData("c0201", "Midlander", "Female")]
+    [InlineData("c0701", "Miqo'te", "Male")]
     [InlineData("c0901", "Roegadyn", "Male")]
+    [InlineData("c1101", "Lalafell", "Male")]
     [InlineData("c1501", "Hrothgar", "Male")]
     [InlineData("c1701", "Viera", "Male")]
     public void ParsesRepresentativeCharacterPaths(string code, string race, string sex)

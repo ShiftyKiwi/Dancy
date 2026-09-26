@@ -20,6 +20,7 @@ public static class PapFileInspector
     private const int HeaderSize = 26;
     private const int AnimationHeaderSize = 40;
     private const int AnimationNameSize = 32;
+    private const int AnimationHavokIndexOffset = 34;
 
     public sealed class PapFileInspection
     {
@@ -28,6 +29,7 @@ public static class PapFileInspector
         public int HavokOffset { get; init; }
         public int TimelineOffset { get; init; }
         public IReadOnlyList<string> AnimationNames { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<int> HavokIndices { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> TimelineSectionSizes { get; init; } = Array.Empty<int>();
         public long Length { get; init; }
     }
@@ -58,10 +60,12 @@ public static class PapFileInspector
             throw new InvalidDataException("PAP header offsets are invalid.");
 
         var names = new List<string>(animationCount);
+        var havokIndices = new List<int>(animationCount);
         for (var index = 0; index < animationCount; index++)
         {
             var nameOffset = animationHeaderOffset + index * AnimationHeaderSize;
             names.Add(ReadNullTerminatedString(bytes, nameOffset, AnimationNameSize));
+            havokIndices.Add(BitConverter.ToInt16(bytes, nameOffset + AnimationHavokIndexOffset));
         }
 
         var sections = new List<int>(animationCount);
@@ -92,6 +96,7 @@ public static class PapFileInspector
             HavokOffset = havokOffset,
             TimelineOffset = timelineOffset,
             AnimationNames = names,
+            HavokIndices = havokIndices,
             TimelineSectionSizes = sections,
             Length = bytes.Length,
         };
