@@ -117,7 +117,7 @@ public static class PenumbraGroupWriter
         }
     }
 
-    private static bool IsDancyGeneratedPapPath(string modPath)
+    public static bool IsDancyGeneratedPapPath(string modPath)
         => modPath.StartsWith("yucksdancy/paps/", StringComparison.OrdinalIgnoreCase)
            && modPath.EndsWith(".pap", StringComparison.OrdinalIgnoreCase);
 }

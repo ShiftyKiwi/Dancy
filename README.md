@@ -46,3 +46,7 @@ dotnet build Dancy/Dancy.csproj -c Debug -p:Platform=x64
 The local game test artifact is `Dancy/bin/x64/Debug/Dancy.dll`.
 
 The automated tests cover target-match fallback, deterministic plans, mapping-conflict refusal, metadata upsert idempotency, and atomic JSON backups. They do not replace in-game validation against real PAP/TMB/HKX assets.
+
+### Confirmed Regression
+
+The real installed-mod `Bench Press - /pushups` to `Water /water` regression was manually confirmed in game on 2026-09-26: `/water` played the intended Push-ups animation without a T-pose. The automated regression also verifies loop-only source selection, current Water event identifiers, generated PAP timeline references, runtime redirects, cleanup, and idempotency.

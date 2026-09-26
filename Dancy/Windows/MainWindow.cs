@@ -51,11 +51,13 @@ namespace Dancy.Windows
         private List<RemappableOption> remappableOptions = new();
         private RemappableOption? selectedOption = null;
         private readonly HashSet<string> selectedSourceGamePaths = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<uint, IReadOnlyList<string>> targetPathsByRowId = new();
 
         // State: target emote
         private string emoteSearch = string.Empty;
         private LuminaEmote? selectedReplacementEmote = null;
         private OverridePlan? previewPlan;
+        private PapCompatibilityResult? previewCompatibility;
         private bool isCreatingOverride;
         private string? lastDiagnostics;
         private readonly OverrideService overrideService = new();
@@ -130,6 +132,7 @@ namespace Dancy.Windows
             selectedSourceGamePaths.Clear();
             selectedReplacementEmote = null;
             previewPlan = null;
+            previewCompatibility = null;
 
             await Task.Run(() =>
             {
@@ -446,6 +449,7 @@ namespace Dancy.Windows
                         selectedSourceGamePaths.Clear();
                         selectedReplacementEmote = null;
                         previewPlan = null;
+                        previewCompatibility = null;
                         lastScanError = null;
                     }
 
@@ -484,26 +488,26 @@ namespace Dancy.Windows
                 && DancyFileManager.DancyExists(selectedModPath))
             {
                 ImGui.Spacing();
-                ImGui.Spacing();
-                ImGui.Spacing();
-                ImGui.Spacing();
-                ImGui.Spacing();
-                // Make the remove button red
+                ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Existing Dancy overrides");
+                var existingOverrides = DancyFileManager.GetDancyOverrides(selectedModPath);
+                foreach (var existing in existingOverrides)
+                {
+                    ImGui.PushID(existing.Id);
+                    ImGui.TextWrapped($"{existing.Name} ({existing.Mappings.Count} target path{(existing.Mappings.Count == 1 ? string.Empty : "s")})");
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Remove"))
+                        RemoveDancyOverride(selectedModPath, existing.Id);
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip(existing.Description);
+                    ImGui.PopID();
+                }
+
                 ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.80f, 0.10f, 0.15f, 1.0f));
                 ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.90f, 0.20f, 0.20f, 1.0f));
                 ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.70f, 0.05f, 0.10f, 1.0f));
 
-                if (ImGui.Button("Remove Dancy from mod"))
-                {
-                    bool isDeleted = DancyFileManager.RemoveDancy(selectedModPath);
-                    if (isDeleted)
-                        Svc.Chat.Print("[Dancy] Removed existing Dancy overrides from the selected mod.");
-                    else
-                        Svc.Chat.Print("[Dancy] No existing Dancy overrides found in the selected mod.");
-
-                    if (!TryReloadMod(selectedModDirectory))
-                        Svc.Chat.Print("[Dancy] Penumbra reload did not complete. The Changed Items tab may stay stale until you use Refresh Data, reload the mod, or restart.");
-                }
+                if (ImGui.Button("Remove all Dancy overrides"))
+                    RemoveAllDancyOverrides(selectedModPath);
 
                 ImGui.PopStyleColor(3); // Button, ButtonHovered, ButtonActive
             }
@@ -517,7 +521,7 @@ namespace Dancy.Windows
         private void DrawStepCard_SelectSource()
         {
             BeginCard("DancyStepSource", "Step 2 – Choose source option",
-                "Pick the mod option whose emote animation you want to remap.");
+                "Loop PAPs are the normal Dancy source. Start and transition PAPs stay visible for context, but are never silently selected.");
 
             if (selectedModDirectory == null)
             {
@@ -551,26 +555,22 @@ namespace Dancy.Windows
                 return;
             }
 
-            var flags = ImGuiTableFlags.RowBg
-                        | ImGuiTableFlags.BordersInnerV
-                        | ImGuiTableFlags.SizingStretchProp;
+            var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
 
-            if (ImGui.BeginTable("DancyOverrideTable", 3, flags))
+            if (ImGui.BeginTable("DancyOverrideTable", 4, flags))
             {
                 ImGui.TableSetupColumn("Group");
                 ImGui.TableSetupColumn("Option");
-                ImGui.TableSetupColumn("Emotes");
+                ImGui.TableSetupColumn("Animation");
+                ImGui.TableSetupColumn("Loop paths");
                 ImGui.TableHeadersRow();
 
                 foreach (var opt in filtered)
                 {
                     bool isSelected = ReferenceEquals(selectedOption, opt);
 
-                    string emotesDisplay = string.Join(", ",
-                        opt.Entries.Select(e =>
-                            string.IsNullOrEmpty(e.EmoteCommand)
-                                ? e.EmoteName
-                                : $"{e.EmoteName} ({e.EmoteCommand})"));
+                    string animationsDisplay = string.Join(", ", opt.LogicalAnimations.Select(animation =>
+                        string.IsNullOrEmpty(animation.Command) ? animation.Name : $"{animation.Name} ({animation.Command})"));
 
                     ImGui.TableNextRow();
                     ImGui.TableNextColumn();
@@ -583,13 +583,17 @@ namespace Dancy.Windows
                         ResetSelectedSourceGamePaths(opt);
                         selectedReplacementEmote = null;
                         previewPlan = null;
+                        previewCompatibility = null;
                     }
 
                     ImGui.TableNextColumn();
                     ImGui.TextWrapped(opt.OptionName);
 
                     ImGui.TableNextColumn();
-                    ImGui.TextWrapped(emotesDisplay);
+                    ImGui.TextWrapped(animationsDisplay);
+
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(opt.LoopEntries.Count.ToString());
                 }
 
                 ImGui.EndTable();
@@ -610,73 +614,47 @@ namespace Dancy.Windows
             EnsureSelectedSourceGamePaths(selected);
 
             ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Selected option");
-            ImGui.Text($"Group:  {selected.GroupName}");
+            ImGui.Text($"Group: {selected.GroupName}");
             ImGui.Text($"Option: {selected.OptionName}");
+            var animationSummary = selected.LogicalAnimations
+                .Select(animation => string.IsNullOrWhiteSpace(animation.Command) ? animation.Name : $"{animation.Name} ({animation.Command})")
+                .ToList();
+            ImGui.TextWrapped($"Animation: {string.Join(", ", animationSummary)}");
+            ImGui.Text($"Paths: {selected.Entries.Count}");
+            ImGui.Text($"Physical PAPs: {selected.Entries.Select(entry => entry.ModdedPapPath).Distinct(StringComparer.OrdinalIgnoreCase).Count()}");
+            ImGui.Text($"Phases: {string.Join(" + ", selected.Entries.Select(entry => entry.AppliesTo.Phase).Distinct().OrderBy(SourceSelectionPolicy.PhaseOrder))}");
 
             ImGui.Spacing();
-            ImGui.Text("Affected emotes / files:");
+            var loops = SourceSelectionPolicy.OrderForDisplay(selected.LoopEntries);
+            var starts = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Start));
+            var ends = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.End));
+            var unknown = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Unknown));
+            var selectedLoopCount = GetSelectedSourceEntries(selected).Count;
+            ImGui.Text($"{selectedLoopCount} / {loops.Count} Loop paths selected");
+            if (starts.Count > 0)
+                ImGui.TextDisabled($"{starts.Count} transition path{(starts.Count == 1 ? string.Empty : "s")} ignored");
 
-            var flagsDetails = ImGuiTableFlags.RowBg
-                               | ImGuiTableFlags.BordersInnerV
-                               | ImGuiTableFlags.SizingStretchSame;
-
-            if (ImGui.BeginTable("DancySelectedOptionTable", 6, flagsDetails))
+            if (ImGui.Button("Select all loops"))
             {
-                ImGui.TableSetupColumn("Use");
-                ImGui.TableSetupColumn("Emote");
-                ImGui.TableSetupColumn("Applies to");
-                ImGui.TableSetupColumn("PAP origin");
-                ImGui.TableSetupColumn("Phase");
-                ImGui.TableSetupColumn("Game path");
-                ImGui.TableHeadersRow();
-
-                foreach (var (e, index) in selected.Entries.Select((Entry, Index) => (Entry, Index)))
-                {
-                    ImGui.TableNextRow();
-                    ImGui.PushID($"DancySourceEntry_{index}");
-
-                    ImGui.TableNextColumn();
-                    var include = selectedSourceGamePaths.Contains(e.GamePath);
-                    if (ImGui.Checkbox("##UseSourcePath", ref include))
-                    {
-                        if (include)
-                            selectedSourceGamePaths.Add(e.GamePath);
-                        else
-                            selectedSourceGamePaths.Remove(e.GamePath);
-
-                        previewPlan = null;
-                    }
-
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("Only"))
-                    {
-                        selectedSourceGamePaths.Clear();
-                        selectedSourceGamePaths.Add(e.GamePath);
-                        previewPlan = null;
-                    }
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(string.IsNullOrWhiteSpace(e.EmoteCommand)
-                        ? e.EmoteName
-                        : $"{e.EmoteName}\n{e.EmoteCommand}");
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.AppliesTo.Character.DisplayName);
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.PapOrigin.IsKnown ? e.PapOrigin.DisplayName : "Mod-relative PAP");
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(e.AppliesTo.Phase.ToString());
-
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped($"{e.GamePath}\n{e.ModdedPapPath}");
-                    ImGui.PopID();
-                }
-
-                ImGui.EndTable();
+                selectedSourceGamePaths.Clear();
+                foreach (var entry in loops)
+                    selectedSourceGamePaths.Add(entry.GamePath);
+                previewPlan = null;
+                previewCompatibility = null;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Clear loop selection"))
+            {
+                foreach (var entry in loops)
+                    selectedSourceGamePaths.Remove(entry.GamePath);
+                previewPlan = null;
+                previewCompatibility = null;
             }
 
+            DrawSourcePathSection("Loop paths", loops, selectable: true, defaultOpen: true);
+            DrawSourcePathSection("Start / transition paths", starts, selectable: false, defaultOpen: false);
+            DrawSourcePathSection("End / other paths", ends, selectable: false, defaultOpen: false);
+            DrawSourcePathSection("Unknown paths", unknown, selectable: false, defaultOpen: false);
             var selectedSourceEntries = GetSelectedSourceEntries(selected);
             ImGui.Spacing();
 
@@ -686,14 +664,86 @@ namespace Dancy.Windows
                 ImGui.Text("Select at least one source path to continue.");
                 ImGui.PopStyleColor();
             }
-            else if (ImGui.Button($"Continue with {selectedSourceEntries.Count} source path{(selectedSourceEntries.Count == 1 ? string.Empty : "s")}"))
+            else if (ImGui.Button($"Continue with {selectedSourceEntries.Count} Loop path{(selectedSourceEntries.Count == 1 ? string.Empty : "s")}"))
             {
                 selectedReplacementEmote = null;
                 previewPlan = null;
+                previewCompatibility = null;
                 currentStep = WizardStep.SelectTarget;
             }
 
             EndCard();
+        }
+
+        private void DrawSourcePathSection(string label, IReadOnlyList<ParsedEmoteOverride> entries, bool selectable, bool defaultOpen)
+        {
+            if (entries.Count == 0)
+                return;
+
+            var flags = defaultOpen ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+            if (!ImGui.TreeNodeEx($"{label} ({entries.Count})##{label}", flags))
+                return;
+
+            var tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
+            if (ImGui.BeginTable($"DancySourcePaths_{label}", 5, tableFlags))
+            {
+                ImGui.TableSetupColumn("Use", ImGuiTableColumnFlags.WidthFixed, selectable ? 106f : 72f);
+                ImGui.TableSetupColumn("Applies to");
+                ImGui.TableSetupColumn("PAP origin");
+                ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.WidthFixed, 86f);
+                ImGui.TableSetupColumn("Details");
+                ImGui.TableHeadersRow();
+
+                foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
+                {
+                    ImGui.TableNextRow();
+                    ImGui.PushID($"DancySourceEntry_{label}_{index}");
+                    ImGui.TableNextColumn();
+                    if (selectable)
+                    {
+                        var include = selectedSourceGamePaths.Contains(entry.GamePath);
+                        if (ImGui.Checkbox("##UseSourcePath", ref include))
+                        {
+                            if (include)
+                                selectedSourceGamePaths.Add(entry.GamePath);
+                            else
+                                selectedSourceGamePaths.Remove(entry.GamePath);
+                            previewPlan = null;
+                            previewCompatibility = null;
+                        }
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton("Select only"))
+                        {
+                            selectedSourceGamePaths.Clear();
+                            selectedSourceGamePaths.Add(entry.GamePath);
+                            previewPlan = null;
+                            previewCompatibility = null;
+                        }
+                    }
+                    else
+                    {
+                        ImGui.TextDisabled("Ignored");
+                    }
+
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(entry.AppliesTo.Character.DisplayName);
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(entry.PapOrigin.IsKnown ? entry.PapOrigin.DisplayName : "Mod-relative PAP");
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(entry.AppliesTo.Phase.ToString());
+                    ImGui.TableNextColumn();
+                    var detail = $"{Path.GetFileName(entry.GamePath)} -> {Path.GetFileName(entry.ModdedPapPath)}";
+                    if (ImGui.Selectable($"{detail}##CopyPaths", false))
+                        ImGui.SetClipboardText($"Game path: {entry.GamePath}\nModded PAP path: {entry.ModdedPapPath}");
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip($"Game path:\n{entry.GamePath}\n\nModded PAP path:\n{entry.ModdedPapPath}\n\nClick to copy both paths.");
+                    ImGui.PopID();
+                }
+
+                ImGui.EndTable();
+            }
+
+            ImGui.TreePop();
         }
 
         // ======================================
@@ -732,7 +782,7 @@ namespace Dancy.Windows
             var selectedSourceEntries = GetSelectedSourceEntries(opt);
 
             ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
-            ImGui.Text($"Selected source paths: {selectedSourceEntries.Count} / {opt.Entries.Count}");
+            ImGui.Text($"Selected Loop paths: {selectedSourceEntries.Count} / {opt.LoopEntries.Count}");
             ImGui.Spacing();
 
             ImGui.PushItemWidth(320f);
@@ -777,10 +827,12 @@ namespace Dancy.Windows
                         | ImGuiTableFlags.BordersInnerV
                         | ImGuiTableFlags.SizingStretchProp;
 
-            if (ImGui.BeginTable("DancyEmoteTable", 2, flags))
+            if (ImGui.BeginTable("DancyEmoteTable", 4, flags))
             {
                 ImGui.TableSetupColumn("Emote");
                 ImGui.TableSetupColumn("Command");
+                ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.WidthFixed, 72f);
+                ImGui.TableSetupColumn("Variants", ImGuiTableColumnFlags.WidthFixed, 72f);
                 ImGui.TableHeadersRow();
 
                 foreach (var emote in results)
@@ -795,10 +847,15 @@ namespace Dancy.Windows
                     {
                         selectedReplacementEmote = emote;
                         previewPlan = null;
+                        previewCompatibility = null;
                     }
 
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(emote.Command);
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(emote.PrimaryPhase.ToString());
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(GetTargetPaths(emote).Count.ToString());
                 }
 
                 ImGui.EndTable();
@@ -810,6 +867,7 @@ namespace Dancy.Windows
             {
                 var looksLikeLoop = selectedReplacementEmote.IsLoopCapable;
                 previewPlan ??= CreatePreviewPlan(opt, selectedReplacementEmote, selectedSourceEntries);
+                previewCompatibility ??= InspectCompatibility(previewPlan);
 
                 // Warning / explanation box
                 ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f);
@@ -844,9 +902,20 @@ namespace Dancy.Windows
 
                 ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Summary");
                 ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
-                ImGui.Text($"Source paths: {selectedSourceEntries.Count} selected");
+                ImGui.Text($"Source Loop paths: {selectedSourceEntries.Count} selected");
                 ImGui.Text($"Target: {selectedReplacementEmote.Name} ({selectedReplacementEmote.Command})");
                 ImGui.TextWrapped($"Target timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
+                var targetPaths = GetTargetPaths(selectedReplacementEmote);
+                var families = targetPaths.Select(path => GamePathIdentity.Parse(path).Directory).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                ImGui.TextWrapped($"Target path family: {string.Join(", ", families)}");
+                ImGui.Text($"Resolved variants: {targetPaths.Count}");
+                var compatibilityColor = previewCompatibility.Status == PapCompatibilityStatus.Unsupported
+                    ? new Vector4(1f, 0.5f, 0.45f, 1f)
+                    : previewCompatibility.Status == PapCompatibilityStatus.CompatibleWithWarning
+                        ? new Vector4(1f, 0.85f, 0.5f, 1f)
+                        : new Vector4(0.65f, 0.9f, 0.7f, 1f);
+                ImGui.TextColored(compatibilityColor, $"Compatibility: {previewCompatibility.Status}");
+                ImGui.TextWrapped(previewCompatibility.Reason);
 
                 DrawMappingPreview(previewPlan);
 
@@ -858,10 +927,10 @@ namespace Dancy.Windows
                     ImGui.Text("Select at least one source path in Step 2.");
                     ImGui.PopStyleColor();
                 }
-                else if (!previewPlan.IsValid)
+                else if (!previewPlan.IsValid || !previewCompatibility.CanCreate)
                 {
                     ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.55f, 0.45f, 1f));
-                    ImGui.TextWrapped(string.Join("\n", previewPlan.Errors));
+                    ImGui.TextWrapped(!previewPlan.IsValid ? string.Join("\n", previewPlan.Errors) : previewCompatibility.Reason);
                     ImGui.PopStyleColor();
                 }
                 else if (ImGui.Button(isCreatingOverride ? "Creating override..." : "Create Dancy override") && !isCreatingOverride)
@@ -893,38 +962,38 @@ namespace Dancy.Windows
         private void ResetSelectedSourceGamePaths(RemappableOption source)
         {
             selectedSourceGamePaths.Clear();
-            foreach (var entry in source.Entries)
+            foreach (var entry in source.LoopEntries)
                 selectedSourceGamePaths.Add(entry.GamePath);
         }
 
         private void EnsureSelectedSourceGamePaths(RemappableOption source)
         {
-            var validPaths = source.Entries
-                .Select(e => e.GamePath)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var validPaths = SourceSelectionPolicy.DefaultLoopGamePaths(source.Entries);
 
             selectedSourceGamePaths.RemoveWhere(path => !validPaths.Contains(path));
 
-            if (selectedSourceGamePaths.Count == 0 && source.Entries.Count == 1)
-                selectedSourceGamePaths.Add(source.Entries[0].GamePath);
+            if (selectedSourceGamePaths.Count == 0 && source.LoopEntries.Count == 1)
+                selectedSourceGamePaths.Add(source.LoopEntries[0].GamePath);
         }
 
         private List<ParsedEmoteOverride> GetSelectedSourceEntries(RemappableOption source)
-            => source.Entries
-                .Where(e => selectedSourceGamePaths.Contains(e.GamePath))
-                .ToList();
+            => SourceSelectionPolicy.SelectedLoopEntries(source.Entries, selectedSourceGamePaths).ToList();
 
         private OverridePlan CreatePreviewPlan(
             RemappableOption source,
             LuminaEmote target,
             IReadOnlyList<ParsedEmoteOverride> sourceEntries)
         {
-            var targetPaths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
+            var targetPaths = GetTargetPaths(target);
+            var sourceAnimation = source.LogicalAnimations.FirstOrDefault(animation => animation.Paths.Any(sourceEntries.Contains))
+                ?? source.LogicalAnimations.FirstOrDefault();
             return OverridePlanner.Create(new OverridePlanRequest
             {
                 ModIdentity = selectedModDirectory ?? string.Empty,
                 SourceGroupName = source.GroupName,
                 SourceOptionName = source.OptionName,
+                SourceAnimationName = sourceAnimation?.Name ?? string.Empty,
+                SourceAnimationCommand = sourceAnimation?.Command ?? string.Empty,
                 TargetTimelineKey = target.PrimaryTimelineKey,
                 TargetName = target.Name,
                 TargetCommand = target.Command,
@@ -933,6 +1002,49 @@ namespace Dancy.Windows
                     .ToList(),
                 TargetGamePaths = targetPaths,
             });
+        }
+
+        private IReadOnlyList<string> GetTargetPaths(LuminaEmote target)
+        {
+            if (!targetPathsByRowId.TryGetValue(target.RowId, out var paths))
+            {
+                paths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey)
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                targetPathsByRowId[target.RowId] = paths;
+            }
+
+            return paths;
+        }
+
+        private PapCompatibilityResult InspectCompatibility(OverridePlan plan)
+        {
+            if (!plan.IsValid)
+                return new PapCompatibilityResult(PapCompatibilityStatus.Unknown, "Select valid Loop source paths before compatibility can be inspected.");
+
+            try
+            {
+                var root = PenumbraDirectoryResolver.GetPenumbraDirectory();
+                if (string.IsNullOrWhiteSpace(root) || selectedModDirectory is null
+                    || !PathSafety.TryResolveInsideRoot(root, selectedModDirectory, out var modFolder))
+                {
+                    return new PapCompatibilityResult(PapCompatibilityStatus.Unknown, "Dancy could not resolve the selected mod folder for PAP inspection.");
+                }
+
+                var results = plan.PapCopies.Select(copy =>
+                {
+                    if (!PathSafety.TryResolveInsideRoot(modFolder, copy.SourcePapPath, out var sourcePath))
+                        throw new InvalidOperationException($"Dancy refused an unsafe source PAP path: {copy.SourcePapPath}");
+                    var source = PapFileInspector.InspectFile(sourcePath);
+                    var targets = copy.TargetGamePaths.Select(PapEditor.InspectTargetPap).ToList();
+                    return PapCompatibilityPreflight.Evaluate(source, targets);
+                });
+                return PapCompatibilityPreflight.Combine(results);
+            }
+            catch (Exception exception)
+            {
+                return new PapCompatibilityResult(PapCompatibilityStatus.Unknown, $"Dancy could not inspect compatibility yet: {exception.Message}");
+            }
         }
 
         private static void DrawMappingPreview(OverridePlan plan)
@@ -990,7 +1102,7 @@ namespace Dancy.Windows
                         throw new DirectoryNotFoundException("The selected Penumbra mod folder does not exist.");
 
                     var operation = overrideService.CreateOrUpdate(modFolder, modDirectory, selectedModName ?? string.Empty, plan);
-                    lastDiagnostics = BuildDiagnostics(source, target, plan, operation.Execution, operation.Write, operation.Reload.Succeeded);
+                    lastDiagnostics = BuildDiagnostics(source, target, plan, operation.Execution, operation.Write, operation.Reload);
                     Svc.Chat.Print(operation.Reload.Succeeded
                         ? "[Dancy] Override created successfully."
                         : "[Dancy] Override created successfully, but Penumbra reload did not complete. Reload the mod manually if its UI still looks stale.");
@@ -1014,7 +1126,7 @@ namespace Dancy.Windows
             OverridePlan plan,
             OverrideExecutionResult execution,
             Penumbra.PenumbraWriteResult write,
-            bool reloaded)
+            PenumbraReloadResult reload)
         {
             var diagnostics = new StringBuilder();
             diagnostics.AppendLine("Dancy diagnostics");
@@ -1024,7 +1136,7 @@ namespace Dancy.Windows
             diagnostics.AppendLine($"Source: ({source.GroupName}) {source.OptionName}");
             diagnostics.AppendLine($"Target: {target.Name} ({target.Command}) [{target.PrimaryTimelineKey}]");
             diagnostics.AppendLine($"Metadata: {write.Format} ({Path.GetFileName(write.MetadataPath)})");
-            diagnostics.AppendLine($"Penumbra reload: {(reloaded ? "succeeded" : "not confirmed")}");
+            diagnostics.AppendLine($"Penumbra reload: {reload.UserFacingOutcome}");
 
             foreach (var copy in plan.PapCopies)
             {
@@ -1057,7 +1169,49 @@ namespace Dancy.Windows
             return diagnostics.ToString();
         }
 
-        private bool TryReloadMod(string modDirectory)
+        private void RemoveDancyOverride(string modFolder, string overrideId)
+        {
+            try
+            {
+                var removal = DancyFileManager.RemoveDancyOverride(modFolder, overrideId);
+                var reload = TryReloadMod(selectedModDirectory ?? string.Empty);
+                var runtime = QueryChangedItemsRuntimeState();
+                lastDiagnostics = $"Dancy removal\nOverride: {overrideId}\nRemoved options: {removal.RemovedOverrideCount}\nRemoved generated files: {removal.GarbageCollection.RemovedFiles.Count}\n{removal.Verification}\nPenumbra runtime reload: {reload.UserFacingOutcome}\n{runtime}";
+                Svc.Chat.Print(removal.RequestedOverrideCleanupSucceeded
+                    ? "[Dancy] Removed the selected override. Disk verification is clean."
+                    : "[Dancy] Removed the selected override, but Dancy disk verification found remaining owned content.");
+                if (!reload.Succeeded)
+                    Svc.Chat.Print("[Dancy] The override was removed and disk cleanup completed, but Penumbra refresh did not complete after one retry. Reload the mod or use Refresh Data if its Changed Items UI looks stale.");
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Failed to remove the selected override.");
+                Svc.Chat.PrintError($"[Dancy] Failed to remove the selected override: {exception.Message}");
+            }
+        }
+
+        private void RemoveAllDancyOverrides(string modFolder)
+        {
+            try
+            {
+                var removal = DancyFileManager.RemoveAllDancyOverrides(modFolder);
+                var reload = TryReloadMod(selectedModDirectory ?? string.Empty);
+                var runtime = QueryChangedItemsRuntimeState();
+                lastDiagnostics = $"Dancy remove all\nRemoved options: {removal.RemovedOverrideCount}\nRemoved generated files: {removal.GarbageCollection.RemovedFiles.Count}\n{removal.Verification}\nPenumbra runtime reload: {reload.UserFacingOutcome}\n{runtime}";
+                Svc.Chat.Print(removal.DiskClean
+                    ? "[Dancy] Removed all Dancy overrides. Disk verification is clean."
+                    : "[Dancy] Dancy removal completed, but owned metadata or generated files remain on disk.");
+                if (!reload.Succeeded)
+                    Svc.Chat.Print("[Dancy] Metadata is clean on disk, but Penumbra reload did not complete. Its Changed Items UI may remain stale until it reloads the mod.");
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Failed to remove Dancy overrides.");
+                Svc.Chat.PrintError($"[Dancy] Failed to remove Dancy overrides: {exception.Message}");
+            }
+        }
+
+        private PenumbraReloadResult TryReloadMod(string modDirectory)
         {
             try
             {
@@ -1065,13 +1219,32 @@ namespace Dancy.Windows
                     ? name
                     : selectedModName ?? string.Empty;
 
-                reloadMod.Invoke(modDirectory, modName);
-                return true;
+                return PenumbraReloadCapture.ExecuteWithSingleRetry(() => reloadMod.Invoke(modDirectory, modName).ToString());
             }
             catch (Exception ex)
             {
                 Svc.Log.Warning(ex, $"[Dancy] Failed to reload Penumbra mod {modDirectory}.");
-                return false;
+                return new PenumbraReloadResult
+                {
+                    Succeeded = false,
+                    Actual = $"{ex.GetType().Name}: {ex.Message}",
+                };
+            }
+        }
+
+        private string QueryChangedItemsRuntimeState()
+        {
+            try
+            {
+                if (selectedModDirectory is null)
+                    return "PENUMBRA RUNTIME: no selected mod for GetChangedItems verification.";
+                var modName = modList.TryGetValue(selectedModDirectory, out var name) ? name : selectedModName ?? string.Empty;
+                var items = new GetChangedItems(Plugin.PluginInterface).Invoke(selectedModDirectory, modName);
+                return $"PENUMBRA RUNTIME: GetChangedItems returned {items.Count} item(s). The supported API cannot attribute one changed item to an individual Dancy option.";
+            }
+            catch (Exception exception)
+            {
+                return $"PENUMBRA RUNTIME: GetChangedItems was unavailable ({exception.GetType().Name}: {exception.Message}).";
             }
         }
     }

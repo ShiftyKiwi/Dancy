@@ -61,16 +61,23 @@ public sealed class GamePathIdentity
 
     private static AnimationPhase DetectPhase(string fileName)
     {
-        var timeline = Path.GetFileNameWithoutExtension(fileName);
-        if (timeline.Contains("loop", StringComparison.OrdinalIgnoreCase))
-            return AnimationPhase.Loop;
-        if (timeline.Contains("start", StringComparison.OrdinalIgnoreCase)
-            || timeline.EndsWith("_st", StringComparison.OrdinalIgnoreCase))
+        var timeline = Path.GetFileNameWithoutExtension(fileName).ToLowerInvariant();
+
+        // FFXIV commonly prefixes every phase in a family with "loop" (for example,
+        // loop_emot08_start). Terminal phase markers must therefore win over the
+        // family name: a start PAP is never a normal looping-override source.
+        if (HasTerminalPhase(timeline, "start") || HasTerminalPhase(timeline, "st"))
             return AnimationPhase.Start;
-        if (timeline.Contains("end", StringComparison.OrdinalIgnoreCase)
-            || timeline.EndsWith("_ed", StringComparison.OrdinalIgnoreCase))
+        if (HasTerminalPhase(timeline, "end") || HasTerminalPhase(timeline, "ed"))
             return AnimationPhase.End;
+        if (HasTerminalPhase(timeline, "loop") || HasTerminalPhase(timeline, "lp"))
+            return AnimationPhase.Loop;
 
         return AnimationPhase.Unknown;
     }
+
+    private static bool HasTerminalPhase(string timeline, string phase)
+        => timeline.Equals(phase, StringComparison.Ordinal)
+           || timeline.EndsWith($"_{phase}", StringComparison.Ordinal)
+           || timeline.EndsWith($"-{phase}", StringComparison.Ordinal);
 }

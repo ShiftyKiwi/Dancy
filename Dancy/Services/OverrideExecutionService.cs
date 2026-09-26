@@ -17,6 +17,7 @@ public sealed class OverrideExecutionResult
     public IReadOnlyDictionary<string, string> FinalMappings { get; init; } = new Dictionary<string, string>();
     public IReadOnlyList<PapEditor.PapPatchResult> PapResults { get; init; } = Array.Empty<PapEditor.PapPatchResult>();
     public IReadOnlyList<string> GeneratedFiles { get; init; } = Array.Empty<string>();
+    public PapCompatibilityResult Compatibility { get; init; } = new(PapCompatibilityStatus.Unknown, "Compatibility was not inspected.");
     internal IReadOnlyList<GeneratedPapTransaction> Transactions { get; init; } = Array.Empty<GeneratedPapTransaction>();
 
     internal void Commit()
@@ -66,6 +67,7 @@ public sealed class OverrideExecutionService
         var papResults = new List<PapEditor.PapPatchResult>();
         var generatedFiles = new List<string>();
         var transactions = new List<GeneratedPapTransaction>();
+        var compatibilityResults = new List<PapCompatibilityResult>();
 
         try
         {
@@ -75,6 +77,15 @@ public sealed class OverrideExecutionService
                     throw new InvalidOperationException($"Dancy refused an unsafe source PAP path: {copy.SourcePapPath}");
                 if (!File.Exists(sourcePapPath))
                     throw new FileNotFoundException("The selected source PAP does not exist.", sourcePapPath);
+
+                var sourceInspection = PapFileInspector.InspectFile(sourcePapPath);
+                var targetInspections = OnFrameworkThread(() => copy.TargetGamePaths
+                    .Select(PapEditor.InspectTargetPap)
+                    .ToList());
+                var compatibility = PapCompatibilityPreflight.Evaluate(sourceInspection, targetInspections);
+                compatibilityResults.Add(compatibility);
+                if (!compatibility.CanCreate)
+                    throw new InvalidOperationException($"Dancy cannot safely create this override: {compatibility.Reason}");
 
                 var targetEvents = OnFrameworkThread(() => copy.TargetGamePaths
                     .Select(path => (GamePath: path, EventIdentifier: PapEditor.ReadTargetEventIdentifier(path)))
@@ -121,6 +132,7 @@ public sealed class OverrideExecutionService
                 FinalMappings = mappings,
                 PapResults = papResults,
                 GeneratedFiles = generatedFiles,
+                Compatibility = PapCompatibilityPreflight.Combine(compatibilityResults),
                 Transactions = transactions,
             };
         }

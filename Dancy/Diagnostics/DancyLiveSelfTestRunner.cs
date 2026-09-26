@@ -4,9 +4,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Dancy.Core;
 using Dancy.Domain;
+using Dancy.Files;
 using Dancy.Pap;
 using Dancy.Penumbra;
 using Dancy.Persistence;
@@ -43,6 +45,9 @@ internal sealed class DancyLiveSelfTestRunner
             var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(location)));
             return $"{location} [{hash}]";
         });
+
+        RunCase(cases, "Water target inspection", "water", "Water exposes supported loop PAP variants with their current game-data structure.", () => OnFramework(InspectWaterTarget));
+        RunCase(cases, "Warrior of Lift Water planning", "water", "The installed Bench Press source produces a loop-only, non-colliding Water plan without writing to the source mod.", () => OnFramework(InspectWarriorOfLiftWaterPlan));
 
         RunCase(cases, "Penumbra fixture preparation", "fixture", "A marker-guarded fixture is added through Penumbra IPC.", () =>
         {
@@ -197,6 +202,24 @@ internal sealed class DancyLiveSelfTestRunner
                 }, fixture.MetaPath);
 
                 RunCase(cases, "Fixture source integrity", "integrity", "The source PAP bytes remain unchanged after normal create and update operations.", () => VerifyFixtureSourceIntegrity(fixture), fixture.ModFolder);
+
+                RunCase(cases, "Individual Dancy removal", "cleanup", "Removing the fixture's one stable override removes only Dancy metadata and unreferenced Dancy PAPs.", () =>
+                {
+                    var updated = fixture.Updated ?? throw new InvalidOperationException("The fixture update did not complete.");
+                    var result = DancyFileManager.RemoveDancyOverride(fixture.ModFolder, updated.Write.OverrideId);
+                    if (!result.DiskClean || DancyFileManager.GetDancyOverrides(fixture.ModFolder).Count != 0)
+                        throw new InvalidOperationException($"Fixture Dancy removal was not disk clean: {result.Verification}");
+                    var reload = new PenumbraIpcModReloader().Reload(FixtureDirectory, FixtureName);
+                    if (!reload.Succeeded)
+                        throw new InvalidOperationException($"Penumbra reload returned {reload.Actual} after fixture removal.");
+                    return $"{result.RemovedOverrideCount} option removed; {result.GarbageCollection.RemovedFiles.Count} owned file(s) collected; {result.Verification}";
+                }, fixture.ModFolder);
+
+                RunCase(cases, "Post-removal runtime query", "runtime", "Supported Penumbra changed-item IPC remains callable after Dancy metadata removal.", () =>
+                {
+                    var items = OnFramework(() => new GetChangedItems(Plugin.PluginInterface).Invoke(FixtureDirectory, FixtureName));
+                    return $"GetChangedItems returned {items.Count} item(s); this supported API is mod-scoped and cannot attribute an item to one Dancy option.";
+                }, fixture.MetaPath);
             }
         }
 
@@ -240,7 +263,7 @@ internal sealed class DancyLiveSelfTestRunner
         ResetFixtureDirectory(modFolder);
         Directory.CreateDirectory(Path.Combine(modFolder, "fixture"));
 
-        var target = OnFramework(SelectFixtureTarget);
+        var target = OnFramework(SelectFixtureDestination);
         var sourceBytes = OnFramework(() => ReadGameFile(target.TargetPaths[0]));
         var sourceSha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(sourceBytes));
         var sourceRelativePath = "fixture/source.pap";
@@ -277,6 +300,7 @@ internal sealed class DancyLiveSelfTestRunner
         var addResult = new AddMod(Plugin.PluginInterface).Invoke(FixtureDirectory).ToString();
         if (!string.Equals(addResult, "Success", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Penumbra AddMod returned {addResult}.");
+        WaitForFixtureSourceReady(Path.Combine(modFolder, sourceRelativePath));
 
         return new FixtureContext
         {
@@ -298,12 +322,119 @@ internal sealed class DancyLiveSelfTestRunner
             ModIdentity = FixtureDirectory,
             SourceGroupName = "Dancy fixture source",
             SourceOptionName = "c1501 source",
+            SourceAnimationName = "Dancy fixture loop",
             TargetTimelineKey = targetTimelineKey,
             TargetName = fixture.TargetName,
             TargetCommand = fixture.TargetCommand,
             Sources = new[] { new OverridePlanSource(fixture.SourceGamePath, fixture.SourceRelativePath) },
             TargetGamePaths = targetPaths,
         });
+
+    private static string InspectWaterTarget()
+    {
+        var water = EmoteLibrary.AllEmotes.FirstOrDefault(emote => string.Equals(emote.Command, "/water", StringComparison.OrdinalIgnoreCase));
+        if (water is null)
+            throw new InvalidOperationException("The /water emote was not found in game data.");
+
+        var targetPaths = PapResolver.ResolvePapFiles(water.PrimaryTimelineKey)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (!targetPaths.Any(path => path.EndsWith("/bt_common/emote_sp/sp60_loop.pap", StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException($"/water did not resolve its expected emote_sp/sp60_loop PAP family: {string.Join(", ", targetPaths)}");
+
+        var structure = targetPaths.Select(path =>
+        {
+            var inspection = PapEditor.InspectTargetPap(path);
+            return $"{GamePathIdentity.Parse(path).Character.Code}:{string.Join(",", inspection.AnimationNames)} [animations={inspection.AnimationCount}, havok={string.Join(",", inspection.HavokIndices)}, tmb={inspection.TimelineSectionSizes.Count}]";
+        });
+        return $"{water.Name} {water.Command}; {targetPaths.Count} variant(s); {string.Join("; ", structure)}";
+    }
+
+    private static string InspectWarriorOfLiftWaterPlan()
+    {
+        var modList = new GetModList(Plugin.PluginInterface).Invoke();
+        var mod = modList.FirstOrDefault(pair => string.Equals(pair.Value, "[HS] Warrior of Lift (Default)", StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(mod.Key))
+            return "Not run: [HS] Warrior of Lift (Default) is not installed in this Penumbra library. No user mod was touched.";
+
+        var root = PenumbraDirectoryResolver.GetPenumbraDirectory();
+        if (string.IsNullOrWhiteSpace(root) || !PathSafety.TryResolveInsideRoot(root, mod.Key, out var modFolder))
+            throw new InvalidOperationException("Dancy could not resolve the installed Warrior of Lift folder safely.");
+
+        var option = EmoteOverrideScanner.ScanMod(modFolder)
+            .SingleOrDefault(candidate => string.Equals(candidate.GroupName, "Bench Press - /pushups", StringComparison.OrdinalIgnoreCase)
+                                       && string.Equals(candidate.OptionName, "Enable", StringComparison.OrdinalIgnoreCase));
+        if (option is null)
+            throw new InvalidOperationException("The installed Warrior of Lift mod has no Bench Press /pushups Enable option.");
+
+        var loops = option.LoopEntries;
+        var starts = option.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Start).ToList();
+        if (loops.Count == 0 || starts.Count == 0)
+            throw new InvalidOperationException($"Expected both Loop and Start PAPs, found {loops.Count} loop and {starts.Count} start paths.");
+
+        var water = EmoteLibrary.AllEmotes.FirstOrDefault(emote => string.Equals(emote.Command, "/water", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("The /water emote was not found in game data.");
+        var targets = PapResolver.ResolvePapFiles(water.PrimaryTimelineKey).ToList();
+        var plan = OverridePlanner.Create(new OverridePlanRequest
+        {
+            ModIdentity = mod.Key,
+            SourceGroupName = option.GroupName,
+            SourceOptionName = option.OptionName,
+            SourceAnimationName = option.LogicalAnimations.FirstOrDefault()?.Name ?? "Push-ups",
+            SourceAnimationCommand = option.LogicalAnimations.FirstOrDefault()?.Command ?? "/pushups",
+            TargetTimelineKey = water.PrimaryTimelineKey,
+            TargetName = water.Name,
+            TargetCommand = water.Command,
+            Sources = loops.Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath)).ToList(),
+            TargetGamePaths = targets,
+        });
+        if (!plan.IsValid)
+            throw new InvalidOperationException(string.Join("; ", plan.Errors));
+        if (plan.PlannedMappings.Count != targets.Count)
+            throw new InvalidOperationException($"The Water plan mapped {plan.PlannedMappings.Count} target paths, expected {targets.Count}.");
+
+        var compatibility = plan.PapCopies.Select(copy =>
+        {
+            if (!PathSafety.TryResolveInsideRoot(modFolder, copy.SourcePapPath, out var sourcePath))
+                throw new InvalidOperationException($"Unsafe Warrior source PAP path: {copy.SourcePapPath}");
+            return PapCompatibilityPreflight.Evaluate(
+                PapFileInspector.InspectFile(sourcePath),
+                copy.TargetGamePaths.Select(PapEditor.InspectTargetPap));
+        });
+        var combined = PapCompatibilityPreflight.Combine(compatibility);
+        if (!combined.CanCreate)
+            throw new InvalidOperationException($"Water preflight blocked the loop-only plan: {combined.Reason}");
+
+        var staleMappings = FindStaleWaterMappings(modFolder);
+        var staleSummary = staleMappings.Count == 0
+            ? "No stale Dancy Water event identifiers found."
+            : $"Stale Dancy Water event identifiers: {string.Join("; ", staleMappings)}. Remove and recreate that legacy override.";
+        return $"{loops.Count} loop paths selected; {starts.Count} start paths ignored; {option.Entries.Select(entry => entry.ModdedPapPath).Distinct(StringComparer.OrdinalIgnoreCase).Count()} physical source PAPs; {plan.PapCopies.Count} generated PAP plans; {plan.PlannedMappings.Count} Water mappings; {combined.Status}: {combined.Reason} {staleSummary}";
+    }
+
+    private static IReadOnlyList<string> FindStaleWaterMappings(string modFolder)
+    {
+        var stale = new List<string>();
+        foreach (var overrideInfo in DancyFileManager.GetDancyOverrides(modFolder))
+        {
+            foreach (var (targetPath, generatedPath) in overrideInfo.Mappings)
+            {
+                if (!targetPath.Contains("/emote_sp/sp60_loop.pap", StringComparison.OrdinalIgnoreCase)
+                    || !PathSafety.TryResolveInsideRoot(modFolder, generatedPath, out var generatedFile)
+                    || !File.Exists(generatedFile))
+                {
+                    continue;
+                }
+
+                var actual = PapFileInspector.InspectFile(generatedFile).AnimationNames.FirstOrDefault();
+                var expected = PapEditor.ReadTargetEventIdentifier(targetPath);
+                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase))
+                    stale.Add($"{overrideInfo.Id}: {GamePathIdentity.Parse(targetPath).Character.Code} {actual} -> {expected}");
+            }
+        }
+
+        return stale;
+    }
 
     private static string VerifyRuntimeRedirections(FixtureContext fixture)
     {
@@ -383,6 +514,27 @@ internal sealed class DancyLiveSelfTestRunner
         Directory.CreateDirectory(modFolder);
     }
 
+    private static void WaitForFixtureSourceReady(string sourcePath)
+    {
+        var timeout = Stopwatch.StartNew();
+        IOException? lastFailure = null;
+        while (timeout.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            try
+            {
+                using var stream = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                return;
+            }
+            catch (IOException exception)
+            {
+                lastFailure = exception;
+                Thread.Sleep(50);
+            }
+        }
+
+        throw new IOException($"Penumbra did not release the debug fixture source PAP after {timeout.Elapsed.TotalSeconds:F1}s.", lastFailure);
+    }
+
     private static void ValidateFixtureMarker(string modFolder)
     {
         var markerPath = Path.Combine(modFolder, ".dancy-debug-fixture.json");
@@ -393,7 +545,7 @@ internal sealed class DancyLiveSelfTestRunner
             throw new InvalidOperationException($"Dancy refused to remove directory with an invalid fixture marker: {modFolder}.");
     }
 
-    private static FixtureTarget SelectFixtureTarget()
+    private static FixtureDestination SelectFixtureDestination()
     {
         foreach (var emote in EmoteLibrary.LoopingEmotes)
         {
@@ -403,7 +555,7 @@ internal sealed class DancyLiveSelfTestRunner
                 .ToList();
             if (RequiredTargetRigs.All(rig => paths.Any(path => path.Contains($"/{rig}/", StringComparison.OrdinalIgnoreCase))))
             {
-                return new FixtureTarget(emote.PrimaryTimelineKey, emote.Name, emote.Command, paths);
+                return new FixtureDestination(emote.PrimaryTimelineKey, emote.Name, emote.Command, paths);
             }
         }
 
@@ -506,6 +658,6 @@ internal sealed class DancyLiveSelfTestRunner
         public OverrideOperationResult? Updated { get; set; }
     }
 
-    private sealed record FixtureTarget(string TimelineKey, string Name, string Command, IReadOnlyList<string> TargetPaths);
+    private sealed record FixtureDestination(string TimelineKey, string Name, string Command, IReadOnlyList<string> TargetPaths);
 }
 #endif

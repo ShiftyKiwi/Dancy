@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 namespace Dancy.Pap;
 
@@ -37,7 +38,30 @@ public static class PapFileInspector
     public static PapFileInspection InspectFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        return Inspect(File.ReadAllBytes(path));
+        return Inspect(ReadFileWithRetry(path));
+    }
+
+    internal static byte[] ReadFileWithRetry(string path)
+    {
+        const int attempts = 100;
+        IOException? lastFailure = null;
+        for (var attempt = 0; attempt < attempts; ++attempt)
+        {
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var memory = new MemoryStream();
+                stream.CopyTo(memory);
+                return memory.ToArray();
+            }
+            catch (IOException exception) when (attempt + 1 < attempts)
+            {
+                lastFailure = exception;
+                Thread.Sleep(25);
+            }
+        }
+
+        throw new IOException($"Dancy could not read PAP file after {attempts} attempts: {path}", lastFailure);
     }
 
     public static PapFileInspection Inspect(byte[] bytes)

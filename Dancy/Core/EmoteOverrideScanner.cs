@@ -117,6 +117,7 @@ public static class EmoteOverrideScanner
     private static void ScanMetaJson(JObject meta, List<RemappableOption> results)
     {
         foreach (var optionGroup in PenumbraMetadataScanner.ScanV4(meta)
+                     .Where(mapping => !string.Equals(mapping.GroupName, DancyMetadataMutator.GroupName, StringComparison.OrdinalIgnoreCase))
                      .GroupBy(mapping => (mapping.GroupName, mapping.OptionName)))
         {
             var entries = new List<ParsedEmoteOverride>();

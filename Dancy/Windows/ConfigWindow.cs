@@ -19,7 +19,7 @@ public class ConfigWindow : Window, IDisposable
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;
 
-        Size = new Vector2(360, 120);
+        Size = new Vector2(360, 210);
         SizeCondition = ImGuiCond.Always;
 
         this.plugin = plugin;
@@ -66,6 +66,15 @@ public class ConfigWindow : Window, IDisposable
         var selfTestSummary = plugin.AgentBridge.LastSelfTestSummary;
         if (!string.IsNullOrWhiteSpace(selfTestSummary))
             ImGui.TextWrapped(selfTestSummary);
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var ranPushupsWaterRegression = ImGui.Button("Run Push-ups to Water production regression");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterPushupsWaterRegressionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (ranPushupsWaterRegression)
+            plugin.AgentBridge.StartPushupsWaterRegression();
 #endif
 
         if (ImGui.Button("Discord Server"))

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using Dancy.Domain;
+using Dancy.Files;
 using Dancy.Penumbra;
 using Dancy.Persistence;
 using Penumbra.Api.IpcSubscribers;
@@ -16,7 +17,7 @@ public sealed class PenumbraIpcModReloader : IPenumbraModReloader
     private readonly ReloadMod reloadMod = new(Plugin.PluginInterface);
 
     public PenumbraReloadResult Reload(string modDirectory, string modName)
-        => PenumbraReloadCapture.Execute(() => reloadMod.Invoke(modDirectory, modName).ToString());
+        => PenumbraReloadCapture.ExecuteWithSingleRetry(() => reloadMod.Invoke(modDirectory, modName).ToString());
 }
 
 public sealed class OverrideOperationResult
@@ -57,13 +58,21 @@ public sealed class OverrideService
         operationLock.Wait();
         try
         {
-            var oldGeneratedFiles = PenumbraGroupWriter.GetExistingGeneratedFiles(modFolder, plan.OverrideId);
             var execution = executionService.CreatePapCopies(modFolder, plan);
             try
             {
                 var write = PenumbraGroupWriter.CreateOrUpdateDancyGroup(modFolder, plan, execution.FinalMappings, writeOptions);
                 execution.Commit();
-                DeleteObsoleteGeneratedFiles(modFolder, oldGeneratedFiles, execution.GeneratedFiles);
+                // Metadata is the ownership source of truth after a successful write.
+                // A later best-effort orphan sweep must never roll back those committed mappings.
+                try
+                {
+                    _ = DancyFileManager.CollectGeneratedFiles(modFolder);
+                }
+                catch
+                {
+                    // The next create or removal retries this narrow yucksdancy-only sweep.
+                }
                 var reload = reloader.Reload(modDirectory, modName);
                 return new OverrideOperationResult
                 {
@@ -84,12 +93,4 @@ public sealed class OverrideService
         }
     }
 
-    private static void DeleteObsoleteGeneratedFiles(string modFolder, IReadOnlyList<string> oldFiles, IReadOnlyList<string> currentFiles)
-    {
-        foreach (var oldFile in oldFiles.Except(currentFiles, StringComparer.OrdinalIgnoreCase))
-        {
-            if (PathSafety.TryResolveInsideRoot(modFolder, oldFile, out var path) && File.Exists(path))
-                File.Delete(path);
-        }
-    }
 }

@@ -137,4 +137,88 @@ public class OverridePlannerTests
         Assert.False(plan.IsValid);
         Assert.Contains(plan.Errors, error => error.Contains("no resolvable PAP", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void RejectsStartPapEvenWhenItsFamilyNameContainsLoop()
+    {
+        var plan = OverridePlanner.Create(new OverridePlanRequest
+        {
+            ModIdentity = "fixture",
+            SourceGroupName = "Bench Press - /pushups",
+            SourceOptionName = "Enable",
+            TargetTimelineKey = "emote_sp/sp60_loop",
+            TargetName = "Water",
+            TargetCommand = "/water",
+            Sources = new[]
+            {
+                new OverridePlanSource("chara/human/c0101/animation/a0001/bt_common/emote/loop_emot08_start.pap", "files/start.pap"),
+            },
+            TargetGamePaths = new[]
+            {
+                "chara/human/c0101/animation/a0001/bt_common/emote_sp/sp60_loop.pap",
+            },
+        });
+
+        Assert.False(plan.IsValid);
+        Assert.Contains(plan.Errors, error => error.Contains("only Loop-phase", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void PlansWarriorOfLiftPushupsToWaterUsingOnlyLoopSources()
+    {
+        var sourceCodes = new[] { "c0101", "c0201", "c0501", "c0601", "c0801", "c0901", "c1401", "c1101" };
+        var targetCodes = new[] { "c0101", "c0201", "c0501", "c0601", "c0801", "c0901", "c1101" };
+        var plan = OverridePlanner.Create(new OverridePlanRequest
+        {
+            ModIdentity = "warrior-of-lift",
+            SourceGroupName = "Bench Press - /pushups",
+            SourceOptionName = "Enable",
+            SourceAnimationName = "Push-ups",
+            SourceAnimationCommand = "/pushups",
+            TargetTimelineKey = "emote_sp/sp60_loop",
+            TargetName = "Water",
+            TargetCommand = "/water",
+            Sources = sourceCodes.Select(code => new OverridePlanSource(
+                $"chara/human/{code}/animation/a0001/bt_common/emote/loop_emot08_loop.pap",
+                code == "c1101"
+                    ? "files/chara/human/c1101/animation/a0001/bt_common/emote/loop_emot08_loop.pap"
+                    : "files/chara/human/c0101/animation/a0001/bt_common/emote/loop_emot08_loop.pap")).ToList(),
+            TargetGamePaths = targetCodes.Select(code => $"chara/human/{code}/animation/a0001/bt_common/emote_sp/sp60_loop.pap").ToList(),
+        });
+
+        Assert.True(plan.IsValid);
+        Assert.Equal(2, plan.PapCopies.Count);
+        Assert.Equal(7, plan.PlannedMappings.Count);
+        Assert.Equal("Push-ups -> Water · 7 paths", plan.DisplayName);
+        Assert.Equal(
+            "Dancy animation override\n\nSource:\nBench Press - /pushups\nOption: Enable\nAnimation: Push-ups (/pushups)\n\nTarget:\nWater (/water)\n\nApplies to:\nMidlander Male (c0101)\nMidlander Female (c0201)\nElezen Male (c0501)\nElezen Female (c0601)\nMiqo'te Female (c0801)\nRoegadyn Male (c0901)\nLalafell Male (c1101)\n\nTarget mappings:\n7",
+            plan.Description);
+    }
+
+    [Fact]
+    public void DescriptionNamesTheOneAffectedTargetVariant()
+    {
+        var plan = OverridePlanner.Create(new OverridePlanRequest
+        {
+            ModIdentity = "fixture",
+            SourceGroupName = "Group",
+            SourceOptionName = "Option",
+            SourceAnimationName = "Push-ups",
+            TargetTimelineKey = "emote/target_loop",
+            TargetName = "Water",
+            TargetCommand = "/water",
+            Sources = new[]
+            {
+                new OverridePlanSource("chara/human/c0701/animation/a0001/bt_common/emote/source_loop.pap", "source.pap"),
+            },
+            TargetGamePaths = new[]
+            {
+                "chara/human/c0701/animation/a0001/bt_common/emote/target_loop.pap",
+            },
+        });
+
+        Assert.True(plan.IsValid);
+        Assert.Contains("Miqo'te Male (c0701)", plan.Description, StringComparison.Ordinal);
+        Assert.Contains("Target mappings:\n1", plan.Description, StringComparison.Ordinal);
+    }
 }

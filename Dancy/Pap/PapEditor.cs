@@ -33,7 +33,7 @@ public static class PapEditor
     public static PapPatchResult ApplyOverride(string defaultPath, string papPath, string newPap)
     {
         var eventIdentifier = ReadTargetEventIdentifier(defaultPath);
-        var sourceBytes = File.ReadAllBytes(papPath);
+        var sourceBytes = PapFileInspector.ReadFileWithRetry(papPath);
         var patched = PatchPap(sourceBytes, eventIdentifier);
         var inspection = PapFileInspector.Inspect(patched.Bytes);
 
@@ -60,16 +60,51 @@ public static class PapEditor
 
     public static string ReadTargetEventIdentifier(string defaultPath)
     {
-        var defaultFile = Plugin.DataManager.GetFile(defaultPath);
-        if (defaultFile == null)
-            throw new FileNotFoundException($"File {defaultPath} was not found in game data.");
-
-        var defaultBytes = ReadAllBytes(defaultFile.Reader.BaseStream);
-        var inspection = PapFileInspector.Inspect(defaultBytes);
+        var inspection = InspectTargetPap(defaultPath);
         var eventIdentifier = inspection.AnimationNames.FirstOrDefault();
         if (string.IsNullOrWhiteSpace(eventIdentifier))
             throw new InvalidDataException($"Could not read an animation name from {defaultPath}.");
         return eventIdentifier;
+    }
+
+    public static PapFileInspector.PapFileInspection InspectTargetPap(string defaultPath)
+    {
+        var defaultFile = Plugin.DataManager.GetFile(defaultPath);
+        if (defaultFile == null)
+            throw new FileNotFoundException($"File {defaultPath} was not found in game data.");
+
+        return PapFileInspector.Inspect(ReadAllBytes(defaultFile.Reader.BaseStream));
+    }
+
+    /// <summary>
+    /// Reads the animation event references embedded in a local PAP's timeline.
+    /// This is diagnostic-only and does not mutate the file.
+    /// </summary>
+    public static IReadOnlyList<string> ReadTimelineEventIdentifiers(string papPath)
+    {
+        var bytes = PapFileInspector.ReadFileWithRetry(papPath);
+        var inspection = PapFileInspector.Inspect(bytes);
+        var sections = ReadTmbSections(bytes, inspection.TimelineOffset, inspection.AnimationCount, inspection.TimelineOffset % 4);
+        var pathField = typeof(C009).GetField("Path", BindingFlags.Instance | BindingFlags.NonPublic);
+        var identifiers = new List<string>();
+
+        foreach (var section in sections)
+        {
+            using var stream = new MemoryStream(section);
+            using var reader = new BinaryReader(stream);
+            var tmb = new TmbFile(reader, null!, verify: false);
+            try
+            {
+                foreach (var entry in tmb.AllEntries.OfType<C009>())
+                {
+                    if (pathField?.GetValue(entry) is TmbOffsetString path && !string.IsNullOrWhiteSpace(path.Value))
+                        identifiers.Add(path.Value);
+                }
+            }
+            finally { tmb.Dispose(); }
+        }
+
+        return identifiers;
     }
 
     private static byte[] ReadAllBytes(Stream stream)

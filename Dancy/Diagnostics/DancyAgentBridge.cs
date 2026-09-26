@@ -17,6 +17,7 @@ internal sealed class DancyAgentBridge : IDisposable
 {
     private const string ReviewSurfaceId = "dancy.debug";
     private const string SelfTestControlId = "dancy.debug.run-selftest";
+    private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -25,6 +26,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private readonly AgentBridgeHost host;
     private int selfTestRunning;
     private DancySelfTestResult? lastSelfTest;
+    private DancySelfTestResult? lastPushupsWaterRegression;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -91,6 +93,24 @@ internal sealed class DancyAgentBridge : IDisposable
             _ => StartSelfTest());
     }
 
+    public void RegisterPushupsWaterRegressionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            PushupsWaterRegressionControlId,
+            "Run Push-ups to Water production regression",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastPushupsWaterRegression?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.pushups-water-regression",
+            _ => StartPushupsWaterRegression());
+    }
+
     public AgentBridgeUiActionResult StartSelfTest()
     {
         if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
@@ -131,6 +151,46 @@ internal sealed class DancyAgentBridge : IDisposable
         return AgentBridgeUiActionResult.Ok("Dancy integration self-test started.", operation.Id);
     }
 
+    public AgentBridgeUiActionResult StartPushupsWaterRegression()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.pushups-water-regression", "Push-ups to Water production regression queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Push-ups to Water production regression is running.");
+                var result = new DancyPushupsWaterRegressionRunner().Run();
+                lastPushupsWaterRegression = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Push-ups to Water production regression reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "PushupsWaterRegressionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["artifactsRetained"] = string.Join(";", result.RetainedArtifacts),
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Push-ups to Water production regression crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledPushupsWaterRegressionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Push-ups to Water production regression started.", operation.Id);
+    }
+
     public void Dispose() => host.Dispose();
 
     private AgentBridgeManifest CreateManifest() => new(
@@ -143,6 +203,7 @@ internal sealed class DancyAgentBridge : IDisposable
         [
             new AgentBridgeCapabilityDescriptor("snapshot.read"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.selftest"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -155,6 +216,7 @@ internal sealed class DancyAgentBridge : IDisposable
         runtime,
         selfTestRunning = IsSelfTestRunning,
         selfTest = lastSelfTest,
+        pushupsWaterRegression = lastPushupsWaterRegression,
         operations = operations.Snapshot(),
         bridge = new
         {
