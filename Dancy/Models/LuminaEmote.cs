@@ -8,6 +8,8 @@ namespace Dancy.Core.Models
     /// </summary>
     public class LuminaEmote
     {
+        public string TargetId { get; set; } = string.Empty;
+
         /// <summary>
         /// Display name, e.g. "Bee's Knees".
         /// </summary>
@@ -34,6 +36,17 @@ namespace Dancy.Core.Models
         public bool IsLoopCapable { get; set; }
 
         public AnimationPhase PrimaryPhase { get; set; }
+
+        public TargetBehavior Behavior { get; set; }
+
+        public TargetContext Context { get; set; }
+
+        public string Trigger { get; set; } = string.Empty;
+
+        /// <summary>
+        /// Concise current-game-data evidence used to classify a state-only target.
+        /// </summary>
+        public string ClassificationEvidence { get; set; } = string.Empty;
 
         /// <summary>
         /// Optional: Emote category name (General, Special, etc.).

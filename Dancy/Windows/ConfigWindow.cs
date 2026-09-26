@@ -19,7 +19,7 @@ public class ConfigWindow : Window, IDisposable
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;
 
-        Size = new Vector2(360, 210);
+        Size = new Vector2(360, 245);
         SizeCondition = ImGuiCond.Always;
 
         this.plugin = plugin;
@@ -43,15 +43,6 @@ public class ConfigWindow : Window, IDisposable
 
     public override void Draw()
     {
-        var showNonLoopTargets = configuration.ShowNonLoopTargets;
-        if (ImGui.Checkbox("Include non-loop target emotes", ref showNonLoopTargets))
-        {
-            configuration.ShowNonLoopTargets = showNonLoopTargets;
-            configuration.Save();
-        }
-
-        ImGui.TextDisabled("Normal overrides use loop-capable targets by default.");
-
 #if DEBUG
         ImGui.Separator();
         var canRunSelfTest = !plugin.AgentBridge.IsSelfTestRunning;
@@ -75,6 +66,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterPushupsWaterRegressionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (ranPushupsWaterRegression)
             plugin.AgentBridge.StartPushupsWaterRegression();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var inspectedTargetCatalog = ImGui.Button("Inspect current target catalog");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterTargetCatalogInspectionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (inspectedTargetCatalog)
+            plugin.AgentBridge.StartTargetCatalogInspection();
 #endif
 
         if (ImGui.Button("Discord Server"))

@@ -80,6 +80,23 @@ namespace Dancy.Pap
                 }
             }
 
+            // The current standing-idle ActionTimeline is "normal/idle", while
+            // its player PAPs live in bt_common/resident/idle.pap rather than a
+            // normal/ directory. Keep this narrow fallback data-derived.
+            if (results.Count == 0 && timelineKey.StartsWith("normal/", StringComparison.OrdinalIgnoreCase))
+            {
+                var residentFile = timelineKey["normal/".Length..];
+                foreach (var race in RaceIds)
+                {
+                    foreach (var layer in AnimationLayers)
+                    {
+                        var path = $"chara/human/{race}/animation/{layer}/bt_common/resident/{residentFile}.pap";
+                        if (Plugin.DataManager.FileExists(path))
+                            results.Add(path);
+                    }
+                }
+            }
+
             return results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
     }

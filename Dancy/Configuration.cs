@@ -9,8 +9,6 @@ public class Configuration : IPluginConfiguration
     public int Version { get; set; } = 1;
 
     public bool IsConfigWindowMovable { get; set; } = true;
-    public bool ShowNonLoopTargets { get; set; }
-
     public string PenumbraPath { get; set; } = string.Empty;
 
     // Debug-only DAB bridge identity. The protected token is DPAPI encrypted by AgentBridge.

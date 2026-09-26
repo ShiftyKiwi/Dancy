@@ -18,6 +18,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string ReviewSurfaceId = "dancy.debug";
     private const string SelfTestControlId = "dancy.debug.run-selftest";
     private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
+    private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -27,6 +28,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private int selfTestRunning;
     private DancySelfTestResult? lastSelfTest;
     private DancySelfTestResult? lastPushupsWaterRegression;
+    private DancySelfTestResult? lastTargetCatalogInspection;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -111,6 +113,24 @@ internal sealed class DancyAgentBridge : IDisposable
             _ => StartPushupsWaterRegression());
     }
 
+    public void RegisterTargetCatalogInspectionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            TargetCatalogInspectionControlId,
+            "Inspect current target catalog",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastTargetCatalogInspection?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.target-catalog",
+            _ => StartTargetCatalogInspection());
+    }
+
     public AgentBridgeUiActionResult StartSelfTest()
     {
         if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
@@ -191,6 +211,46 @@ internal sealed class DancyAgentBridge : IDisposable
         return AgentBridgeUiActionResult.Ok("Push-ups to Water production regression started.", operation.Id);
     }
 
+    public AgentBridgeUiActionResult StartTargetCatalogInspection()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.target-catalog", "Current target catalog inspection queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Current target catalog inspection is running.");
+                var result = new DancyTargetCatalogInspector().Run();
+                lastTargetCatalogInspection = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Current target catalog inspection reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "TargetCatalogInspectionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["artifactsRetained"] = string.Join(";", result.RetainedArtifacts),
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Target catalog inspection crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledTargetCatalogInspectionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Current target catalog inspection started.", operation.Id);
+    }
+
     public void Dispose() => host.Dispose();
 
     private AgentBridgeManifest CreateManifest() => new(
@@ -204,6 +264,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("snapshot.read"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.selftest"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -217,6 +278,7 @@ internal sealed class DancyAgentBridge : IDisposable
         selfTestRunning = IsSelfTestRunning,
         selfTest = lastSelfTest,
         pushupsWaterRegression = lastPushupsWaterRegression,
+        targetCatalogInspection = lastTargetCatalogInspection,
         operations = operations.Snapshot(),
         bridge = new
         {

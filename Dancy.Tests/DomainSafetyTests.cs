@@ -39,11 +39,14 @@ public class DomainSafetyTests
     }
 
     [Fact]
-    public void RejectsUnknownCharacterPathAndNonLoopTargetsByDefault()
+    public void RejectsUnknownCharacterPathAndKeepsTransitionsOutOfOrdinaryTargetCategories()
     {
         Assert.False(CharacterPathIdentity.FromGamePath("chara/human/c9999/animation/a0001/test.pap").IsKnown);
-        Assert.True(TargetEmotePolicy.IsSelectable(includeNonLoopTargets: false, isLoopCapable: true));
-        Assert.False(TargetEmotePolicy.IsSelectable(includeNonLoopTargets: false, isLoopCapable: false));
-        Assert.True(TargetEmotePolicy.IsSelectable(includeNonLoopTargets: true, isLoopCapable: false));
+        Assert.True(TargetEmotePolicy.IsVisible(TargetSelectionCategory.LoopingEmotes, TargetBehavior.LoopingEmote));
+        Assert.True(TargetEmotePolicy.IsVisible(TargetSelectionCategory.PosesAndIdles, TargetBehavior.PersistentPose));
+        Assert.True(TargetEmotePolicy.IsVisible(TargetSelectionCategory.Advanced, TargetBehavior.OneShot));
+        Assert.False(TargetEmotePolicy.IsVisible(TargetSelectionCategory.LoopingEmotes, TargetBehavior.Transition));
+        Assert.False(TargetEmotePolicy.IsVisible(TargetSelectionCategory.PosesAndIdles, TargetBehavior.Transition));
+        Assert.False(TargetEmotePolicy.IsVisible(TargetSelectionCategory.Advanced, TargetBehavior.Transition));
     }
 }

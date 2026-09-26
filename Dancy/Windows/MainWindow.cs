@@ -51,16 +51,20 @@ namespace Dancy.Windows
         private List<RemappableOption> remappableOptions = new();
         private RemappableOption? selectedOption = null;
         private readonly HashSet<string> selectedSourceGamePaths = new(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<uint, IReadOnlyList<string>> targetPathsByRowId = new();
+        private readonly Dictionary<string, IReadOnlyList<string>> targetPathsById = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, TargetPapStatus> targetPapStatusById = new(StringComparer.OrdinalIgnoreCase);
 
         // State: target emote
         private string emoteSearch = string.Empty;
+        private TargetSelectionCategory targetSelectionCategory = TargetSelectionCategory.LoopingEmotes;
         private LuminaEmote? selectedReplacementEmote = null;
         private OverridePlan? previewPlan;
         private PapCompatibilityResult? previewCompatibility;
         private bool isCreatingOverride;
         private string? lastDiagnostics;
         private readonly OverrideService overrideService = new();
+
+        private sealed record TargetPapStatus(bool IsSupported, string Summary, string Detail);
 
         // Step navigation
         private WizardStep currentStep = WizardStep.SelectMod;
@@ -786,39 +790,49 @@ namespace Dancy.Windows
             ImGui.Spacing();
 
             ImGui.PushItemWidth(320f);
-            ImGui.InputText("Search target emote", ref emoteSearch, 100);
+            ImGui.InputText("Search targets", ref emoteSearch, 100);
             ImGui.PopItemWidth();
 
-            var showNonLoopTargets = plugin.Configuration.ShowNonLoopTargets;
-            if (ImGui.Checkbox("Include non-loop targets", ref showNonLoopTargets))
+            if (ImGui.BeginTabBar("DancyTargetTypes"))
             {
-                plugin.Configuration.ShowNonLoopTargets = showNonLoopTargets;
-                plugin.Configuration.Save();
+                if (ImGui.BeginTabItem("Looped Emotes"))
+                {
+                    targetSelectionCategory = TargetSelectionCategory.LoopingEmotes;
+                    ImGui.EndTabItem();
+                }
+                if (ImGui.BeginTabItem("Poses & Idles"))
+                {
+                    targetSelectionCategory = TargetSelectionCategory.PosesAndIdles;
+                    ImGui.EndTabItem();
+                }
+                if (ImGui.BeginTabItem("One-shot / Advanced"))
+                {
+                    targetSelectionCategory = TargetSelectionCategory.Advanced;
+                    ImGui.EndTabItem();
+                }
+                ImGui.EndTabBar();
             }
 
             ImGui.Spacing();
 
-            var targetCatalog = EmoteLibrary.AllEmotes
-                .Where(emote => TargetEmotePolicy.IsSelectable(plugin.Configuration.ShowNonLoopTargets, emote.IsLoopCapable))
-                .ToList();
-            if (!plugin.Configuration.ShowNonLoopTargets
-                && selectedReplacementEmote != null
-                && !selectedReplacementEmote.IsLoopCapable)
-            {
-                selectedReplacementEmote = null;
-                previewPlan = null;
-            }
-
-            var results = targetCatalog
-                .Where(e => string.IsNullOrEmpty(emoteSearch)
-                         || e.Name.Contains(emoteSearch, StringComparison.OrdinalIgnoreCase)
-                         || e.Command.Contains(emoteSearch, StringComparison.OrdinalIgnoreCase))
+            var isSearchingTargets = !string.IsNullOrWhiteSpace(emoteSearch);
+            var results = EmoteLibrary.AllEmotes
+                .Where(emote => isSearchingTargets
+                    ? TargetEmotePolicy.IsSearchResult(emote.Behavior)
+                    : TargetEmotePolicy.IsVisible(targetSelectionCategory, emote.Behavior))
+                .Where(emote => TargetSemantics.MatchesSearch(
+                    emoteSearch,
+                    emote.Name,
+                    emote.Command,
+                    emote.Trigger,
+                    TargetSemantics.DisplayName(emote.Behavior),
+                    TargetSemantics.DisplayName(emote.Context)))
                 .Take(50)
                 .ToList();
 
             if (results.Count == 0)
             {
-                ImGui.Text("No matching emotes found.");
+                ImGui.Text(isSearchingTargets ? "No matching targets." : "No matching targets in this category.");
                 EndCard();
                 return;
             }
@@ -827,12 +841,12 @@ namespace Dancy.Windows
                         | ImGuiTableFlags.BordersInnerV
                         | ImGuiTableFlags.SizingStretchProp;
 
-            if (ImGui.BeginTable("DancyEmoteTable", 4, flags))
+            if (ImGui.BeginTable("DancyTargetTable", 4, flags))
             {
-                ImGui.TableSetupColumn("Emote");
-                ImGui.TableSetupColumn("Command");
-                ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.WidthFixed, 72f);
+                ImGui.TableSetupColumn("Target");
+                ImGui.TableSetupColumn("Trigger / context");
                 ImGui.TableSetupColumn("Variants", ImGuiTableColumnFlags.WidthFixed, 72f);
+                ImGui.TableSetupColumn("Compatibility", ImGuiTableColumnFlags.WidthFixed, 130f);
                 ImGui.TableHeadersRow();
 
                 foreach (var emote in results)
@@ -841,21 +855,47 @@ namespace Dancy.Windows
                     ImGui.TableNextColumn();
 
                     bool isSelected = ReferenceEquals(selectedReplacementEmote, emote);
-                    string label = $"{emote.Name}##{emote.RowId}";
+                    string label = $"{emote.Name}##{emote.TargetId}";
+                    var targetStatus = GetTargetPapStatus(emote);
 
+                    if (!targetStatus.IsSupported && isSelected)
+                    {
+                        selectedReplacementEmote = null;
+                        previewPlan = null;
+                        previewCompatibility = null;
+                        isSelected = false;
+                    }
+
+                    if (!targetStatus.IsSupported)
+                        ImGui.BeginDisabled();
                     if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns))
                     {
                         selectedReplacementEmote = emote;
                         previewPlan = null;
                         previewCompatibility = null;
                     }
+                    if (!targetStatus.IsSupported)
+                        ImGui.EndDisabled();
+
+                    ImGui.TextDisabled($"{TargetSemantics.DisplayName(emote.Behavior)} · {TargetSemantics.DisplayName(emote.Context)}");
 
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(emote.Command);
-                    ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(emote.PrimaryPhase.ToString());
+                    var trigger = string.IsNullOrWhiteSpace(emote.Trigger) ? emote.Command : emote.Trigger;
+                    ImGui.TextUnformatted(string.IsNullOrWhiteSpace(trigger)
+                        ? TargetSemantics.DisplayName(emote.Context)
+                        : trigger);
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(GetTargetPaths(emote).Count.ToString());
+                    ImGui.TableNextColumn();
+                    if (!targetStatus.IsSupported)
+                        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.45f, 1f));
+                    ImGui.TextWrapped(targetStatus.Summary);
+                    if (!targetStatus.IsSupported)
+                    {
+                        ImGui.PopStyleColor();
+                        if (ImGui.IsItemHovered())
+                            ImGui.SetTooltip(targetStatus.Detail);
+                    }
                 }
 
                 ImGui.EndTable();
@@ -865,50 +905,35 @@ namespace Dancy.Windows
 
             if (selectedReplacementEmote != null)
             {
-                var looksLikeLoop = selectedReplacementEmote.IsLoopCapable;
                 previewPlan ??= CreatePreviewPlan(opt, selectedReplacementEmote, selectedSourceEntries);
                 previewCompatibility ??= InspectCompatibility(previewPlan);
 
-                // Warning / explanation box
-                ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f);
-                ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.18f, 0.15f, 0.05f, 0.6f));
-                ImGui.BeginChild("DancyWarningBox", new Vector2(0, 70), true);
-
-                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.9f, 0.6f, 1f));
-                if (looksLikeLoop)
+                var behaviorNotice = TargetSemantics.BehaviorNotice(selectedReplacementEmote.Behavior);
+                if (!string.IsNullOrWhiteSpace(behaviorNotice))
                 {
-                    ImGui.TextWrapped(
-                        "Note: Dancy does not change how long the emote runs.\n" +
-                        "Looped dances are ideal targets. One-shot emotes like /wave or /love will still stop after their normal short duration.\n"+
-                                "If you notice timing issues at the start of some animations: this is a known limitation and I am actively working on a solution.\n" +
-        "As a workaround, try using looped dances like Beesknees or Gold Dance.");
+                    var warning = selectedReplacementEmote.Behavior is TargetBehavior.OneShot or TargetBehavior.Unknown;
+                    ImGui.PushStyleColor(ImGuiCol.Text, warning
+                        ? new Vector4(1f, 0.78f, 0.45f, 1f)
+                        : new Vector4(0.7f, 0.86f, 0.8f, 1f));
+                    ImGui.TextWrapped(behaviorNotice);
+                    ImGui.PopStyleColor();
+                    ImGui.Spacing();
                 }
-                else
-                {
-                    ImGui.TextWrapped(
-                        "Warning: This target does not look like a looped dance.\n" +
-                        "If you map a full dance mod to a one-shot emote (e.g. /wave, /blowkiss, /love), " +
-                        "the animation will still end quickly. That is normal game behavior, not a Dancy bug.\n"+
-                                "If you notice timing issues at the start of some animations: this is a known limitation and I am actively working on a solution.\n" +
-        "As a workaround, try using looped dances like Beesknees or Gold Dance.");
-                }
-                ImGui.PopStyleColor();
-
-                ImGui.EndChild();
-                ImGui.PopStyleColor();
-                ImGui.PopStyleVar();
 
                 ImGui.Spacing();
 
                 ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Summary");
                 ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
                 ImGui.Text($"Source Loop paths: {selectedSourceEntries.Count} selected");
-                ImGui.Text($"Target: {selectedReplacementEmote.Name} ({selectedReplacementEmote.Command})");
-                ImGui.TextWrapped($"Target timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
+                ImGui.Text($"Target: {selectedReplacementEmote.Name}");
+                ImGui.Text($"Type: {TargetSemantics.DisplayName(selectedReplacementEmote.Behavior)}");
+                ImGui.Text($"Context: {TargetSemantics.DisplayName(selectedReplacementEmote.Context)}");
+                var selectedTrigger = string.IsNullOrWhiteSpace(selectedReplacementEmote.Trigger)
+                    ? selectedReplacementEmote.Command
+                    : selectedReplacementEmote.Trigger;
+                ImGui.TextWrapped($"Trigger: {(string.IsNullOrWhiteSpace(selectedTrigger) ? "State-managed" : selectedTrigger)}");
                 var targetPaths = GetTargetPaths(selectedReplacementEmote);
-                var families = targetPaths.Select(path => GamePathIdentity.Parse(path).Directory).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                ImGui.TextWrapped($"Target path family: {string.Join(", ", families)}");
-                ImGui.Text($"Resolved variants: {targetPaths.Count}");
+                ImGui.Text($"Variants: {targetPaths.Count}");
                 var compatibilityColor = previewCompatibility.Status == PapCompatibilityStatus.Unsupported
                     ? new Vector4(1f, 0.5f, 0.45f, 1f)
                     : previewCompatibility.Status == PapCompatibilityStatus.CompatibleWithWarning
@@ -916,6 +941,19 @@ namespace Dancy.Windows
                         : new Vector4(0.65f, 0.9f, 0.7f, 1f);
                 ImGui.TextColored(compatibilityColor, $"Compatibility: {previewCompatibility.Status}");
                 ImGui.TextWrapped(previewCompatibility.Reason);
+
+                if (ImGui.TreeNode("Details"))
+                {
+                    ImGui.TextWrapped($"Timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
+                    if (!string.IsNullOrWhiteSpace(selectedReplacementEmote.ClassificationEvidence))
+                        ImGui.TextWrapped($"Classification evidence: {selectedReplacementEmote.ClassificationEvidence}");
+                    foreach (var path in targetPaths)
+                    {
+                        var character = GamePathIdentity.Parse(path).Character;
+                        ImGui.BulletText($"{(character.IsKnown ? character.DisplayName : "Unclassified variant")}: {path}");
+                    }
+                    ImGui.TreePop();
+                }
 
                 DrawMappingPreview(previewPlan);
 
@@ -1006,15 +1044,49 @@ namespace Dancy.Windows
 
         private IReadOnlyList<string> GetTargetPaths(LuminaEmote target)
         {
-            if (!targetPathsByRowId.TryGetValue(target.RowId, out var paths))
+            var targetId = string.IsNullOrWhiteSpace(target.TargetId) ? target.PrimaryTimelineKey : target.TargetId;
+            if (!targetPathsById.TryGetValue(targetId, out var paths))
             {
                 paths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey)
                     .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                targetPathsByRowId[target.RowId] = paths;
+                targetPathsById[targetId] = paths;
             }
 
             return paths;
+        }
+
+        private TargetPapStatus GetTargetPapStatus(LuminaEmote target)
+        {
+            var targetId = string.IsNullOrWhiteSpace(target.TargetId) ? target.PrimaryTimelineKey : target.TargetId;
+            if (targetPapStatusById.TryGetValue(targetId, out var status))
+                return status;
+
+            var paths = GetTargetPaths(target);
+            if (paths.Count == 0)
+                return targetPapStatusById[targetId] = new TargetPapStatus(
+                    false,
+                    "Unavailable: no PAPs",
+                    $"Dancy recognizes {target.Name}, but could not resolve current target PAP variants. Refresh Data or choose another target.");
+
+            try
+            {
+                var inspections = paths.Select(PapEditor.InspectTargetPap).ToList();
+                var complex = inspections.FirstOrDefault(inspection => inspection.AnimationCount != 1 || inspection.TimelineSectionSizes.Count != 1);
+                return targetPapStatusById[targetId] = complex is null
+                    ? new TargetPapStatus(true, "PAP ready", "This target's current PAP variants satisfy Dancy's one-animation, one-TMB-section preflight.")
+                    : new TargetPapStatus(
+                        false,
+                        $"Unsupported: {complex.AnimationCount} animation / {complex.TimelineSectionSizes.Count} TMB",
+                        $"Dancy recognizes {target.Name} as {TargetSemantics.DisplayName(target.Behavior)} / {TargetSemantics.DisplayName(target.Context)}, but its PAP has {complex.AnimationCount} animation sections and {complex.TimelineSectionSizes.Count} TMB sections. Dancy only rewrites one-animation, one-TMB target PAPs; choose a PAP-ready target instead.");
+            }
+            catch (Exception exception)
+            {
+                return targetPapStatusById[targetId] = new TargetPapStatus(
+                    false,
+                    $"Unavailable: {exception.GetType().Name}",
+                    $"Dancy could not inspect {target.Name}'s PAP structure. Refresh Data or choose another target.");
+            }
         }
 
         private PapCompatibilityResult InspectCompatibility(OverridePlan plan)
