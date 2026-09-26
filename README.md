@@ -1,37 +1,70 @@
 # Dancy
 
-Dancy creates non-destructive Penumbra options that remap a selected animation-mod PAP to a chosen emote's loop PAP paths. The original mod options and files remain unchanged.
+Dancy is an Early Access Dalamud plugin for creating non-destructive animation
+overrides inside installed Penumbra mods. It copies only the PAP files needed
+for an override, creates a Dancy-owned option in the selected mod, and leaves
+the original mod's options and files untouched.
 
-## Normal workflow
+## Requirements
 
-1. Open `/dancy`, choose a Penumbra mod, and scan it.
-2. Choose one or more source PAP paths from an option. Paired options can be narrowed to one row with the checkbox or `Only` button.
-3. Choose a loop-capable target emote. Non-loop targets are hidden by default and can be included deliberately.
-4. Review the mapping preview, then create the override.
+- FINAL FANTASY XIV with Dalamud.
+- Penumbra installed, enabled, and configured with a readable mod directory.
+- A Penumbra animation mod containing PAP redirects to use as a source.
 
-Dancy writes generated PAPs under `yucksdancy/paps` and adds or updates its `Yuck's Dancy` option. Running the same source/target selection again uses the same override ID and output names instead of endlessly appending options.
+## Workflow
 
-## Safety and recovery
+1. Open `/dancy`, select a Penumbra mod, and scan its options.
+2. Choose a source option. Dancy separates normal loop PAPs from start,
+   transition, end, and unknown paths so only valid loop sources are selected
+   for a normal override by default. Paired options can be narrowed to one
+   game path when only one side should change.
+3. Choose a target. The default `Looped Emotes` tab is for regular looping
+   emotes. `Poses & Idles` contains persistent character states such as chair
+   sit, ground sit, sleep/lying, and supported Change Pose families.
+   `One-shot / Advanced` contains targets whose duration is controlled by the
+   game and may end naturally.
+4. Review Dancy's mapping preview, source/target variants, and structural PAP
+   compatibility result. Create the override only when the preflight permits it.
 
-- The source PAP must stay inside the selected mod directory.
-- Generated PAPs are created before metadata is changed.
-- `meta.json` and legacy `group_*.json` changes are validated, written through a temporary file, and retain a `.dancy.bak` copy of the previous JSON.
-- Removing Dancy deletes only its own group files and `yucksdancy` directory. If its metadata write cannot be persisted, generated files are left untouched.
-- After any metadata change Dancy asks Penumbra to reload the mod. A reload warning means the override is written, but Penumbra's UI may need a manual mod reload or Refresh Data.
+Target search spans these categories and labels each result with its playback
+behavior and state context. Raw paths are retained in the expandable Details
+section rather than crowding the normal summary.
+
+## Override Lifecycle
+
+Dancy writes generated PAPs under `yucksdancy/paps` and adds or updates a
+`Yuck's Dancy` option. Repeating the same source and target selection updates
+the existing Dancy-owned override instead of accumulating duplicate options.
+
+You can remove an individual Dancy override or remove all Dancy overrides from
+the selected mod. Dancy removes only its metadata and generated files, then
+asks Penumbra to reload the mod. If Penumbra's supported reload API has a
+transient failure, Dancy retries once and reports whether disk cleanup completed
+even when the Penumbra UI needs a manual refresh.
 
 ## Diagnostics
 
-After an apply attempt, the wizard footer exposes `Copy diagnostics`. It includes the Dancy assembly version/MVID, plan ID, source and target identities, match strategies, PAP event identifiers, metadata format, warnings, and reload outcome. Do not paste a diagnostic that contains local paths into a public channel without reviewing it first.
+`Copy diagnostics` records the active Dancy build, selected source and target,
+mapping strategy, PAP event identifiers, metadata format, structural preflight,
+and Penumbra reload result. Review diagnostics before sharing because they can
+contain local file paths.
 
-## Cross-rig status
+## Known Limitations
 
-Dancy recognizes the standard `c0101` through `c1801` character-path identities and reports when it must expand a source PAP across target variants. That is path mapping, not skeletal retargeting.
+- Standing Idle is recognized as `Persistent Pose - Standing Idle`, but is
+  disabled because its current PAP has two animation and two TMB sections.
+  Dancy's safe writer supports one-animation, one-TMB target PAPs only.
+- Some `One-shot / Advanced` targets finish naturally because their duration is
+  controlled by the game.
+- A semantic target classification never bypasses structural PAP preflight.
+- Dancy is Early Access. Test an override on a copy of an important mod first.
 
-No automatic cross-rig HKX, transform-track, or face-data retargeter is included. Real assets and in-game test cases are required before such a feature can be considered safe; the current supported path remains ordinary PAP override creation.
+Dancy does not include animation retargeting, skeleton editing, or archived
+animation-transformation experiments.
 
-## Validation
+## Development Validation
 
-Run the focused tests:
+Run the focused offline suite:
 
 ```powershell
 dotnet test Dancy.Tests/Dancy.Tests.csproj -c Debug
@@ -43,10 +76,6 @@ Build the developer DLL:
 dotnet build Dancy/Dancy.csproj -c Debug -p:Platform=x64
 ```
 
-The local game test artifact is `Dancy/bin/x64/Debug/Dancy.dll`.
-
-The automated tests cover target-match fallback, deterministic plans, mapping-conflict refusal, metadata upsert idempotency, and atomic JSON backups. They do not replace in-game validation against real PAP/TMB/HKX assets.
-
-### Confirmed Regression
-
-The real installed-mod `Bench Press - /pushups` to `Water /water` regression was manually confirmed in game on 2026-09-26: `/water` played the intended Push-ups animation without a T-pose. The automated regression also verifies loop-only source selection, current Water event identifiers, generated PAP timeline references, runtime redirects, cleanup, and idempotency.
+The local developer artifact is `Dancy/bin/x64/Debug/Dancy.dll`. Offline tests
+do not replace in-game validation against real Penumbra mods and client PAP
+data.

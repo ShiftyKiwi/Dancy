@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
-    <Version>0.1.2</Version>
-    <Description>Change emotes in Penumbra mods.</Description>
+    <Version>0.2.0</Version>
+    <Description>Create non-destructive animation overrides in Penumbra mods.</Description>
     <PackageProjectUrl>https://github.com/ShiftyKiwi/Dancy</PackageProjectUrl>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
     <IsPackable>false</IsPackable>
