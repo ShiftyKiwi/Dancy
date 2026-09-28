@@ -25,6 +25,7 @@ public static class PapFileInspector
     private const int AnimationHavokIndexOffset = 34;
     private const int AnimationFaceFlagOffset = 36;
 
+    public sealed record PapAnimationHeaderLocation(int Index, int Offset, int Size);
     public sealed record PapTimelineSectionLocation(int Index, int Offset, int Size);
 
     public sealed class PapFileInspection
@@ -32,11 +33,13 @@ public static class PapFileInspector
         public int AnimationCount { get; init; }
         public int AnimationHeaderOffset { get; init; }
         public int HavokOffset { get; init; }
+        public int HavokSize { get; init; }
         public int TimelineOffset { get; init; }
         public IReadOnlyList<string> AnimationNames { get; init; } = Array.Empty<string>();
         public IReadOnlyList<int> AnimationTypes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> HavokIndices { get; init; } = Array.Empty<int>();
         public IReadOnlyList<bool> FaceAnimationFlags { get; init; } = Array.Empty<bool>();
+        public IReadOnlyList<PapAnimationHeaderLocation> AnimationHeaders { get; init; } = Array.Empty<PapAnimationHeaderLocation>();
         public IReadOnlyList<int> TimelineSectionSizes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<PapTimelineSectionLocation> TimelineSections { get; init; } = Array.Empty<PapTimelineSectionLocation>();
         public long Length { get; init; }
@@ -94,6 +97,7 @@ public static class PapFileInspector
         var types = new List<int>(animationCount);
         var havokIndices = new List<int>(animationCount);
         var faceFlags = new List<bool>(animationCount);
+        var animationHeaders = new List<PapAnimationHeaderLocation>(animationCount);
         for (var index = 0; index < animationCount; index++)
         {
             var nameOffset = animationHeaderOffset + index * AnimationHeaderSize;
@@ -101,6 +105,7 @@ public static class PapFileInspector
             types.Add(BitConverter.ToInt16(bytes, nameOffset + AnimationTypeOffset));
             havokIndices.Add(BitConverter.ToInt16(bytes, nameOffset + AnimationHavokIndexOffset));
             faceFlags.Add(ReadInt32(bytes, nameOffset + AnimationFaceFlagOffset) == 1);
+            animationHeaders.Add(new PapAnimationHeaderLocation(index, nameOffset, AnimationHeaderSize));
         }
 
         var sections = new List<int>(animationCount);
@@ -131,11 +136,13 @@ public static class PapFileInspector
             AnimationCount = animationCount,
             AnimationHeaderOffset = animationHeaderOffset,
             HavokOffset = havokOffset,
+            HavokSize = timelineOffset - havokOffset,
             TimelineOffset = timelineOffset,
             AnimationNames = names,
             AnimationTypes = types,
             HavokIndices = havokIndices,
             FaceAnimationFlags = faceFlags,
+            AnimationHeaders = animationHeaders,
             TimelineSectionSizes = sections,
             TimelineSections = sectionLocations,
             Length = bytes.Length,

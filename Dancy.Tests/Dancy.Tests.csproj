@@ -25,6 +25,7 @@
     <Compile Include="..\Dancy\Persistence\PathSafety.cs" Link="Persistence\PathSafety.cs" />
     <Compile Include="..\Dancy\Pap\PapFileInspector.cs" Link="Pap\PapFileInspector.cs" />
     <Compile Include="..\Dancy\Pap\PapStructuralModel.cs" Link="Pap\PapStructuralModel.cs" />
+    <Compile Include="..\Dancy\Diagnostics\PenumbraAnimationCorpusIndexer.cs" Link="Diagnostics\PenumbraAnimationCorpusIndexer.cs" />
     <Compile Include="..\Dancy\Pap\PapCompatibilityPreflight.cs" Link="Pap\PapCompatibilityPreflight.cs" />
     <Compile Include="..\Dancy\Services\PenumbraReloadResult.cs" Link="Services\PenumbraReloadResult.cs" />
     <Compile Include="..\Dancy\Models\ParsedEmoteOverride.cs" Link="Models\ParsedEmoteOverride.cs" />

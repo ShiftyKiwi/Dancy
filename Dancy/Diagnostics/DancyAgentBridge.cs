@@ -20,6 +20,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
     private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
     private const string MultiSectionResearchControlId = "dancy.debug.inspect-multisection-paps";
+    private const string CorpusResearchControlId = "dancy.debug.index-animation-corpus";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -31,6 +32,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastPushupsWaterRegression;
     private DancySelfTestResult? lastTargetCatalogInspection;
     private DancySelfTestResult? lastMultiSectionResearch;
+    private DancySelfTestResult? lastCorpusResearch;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -149,6 +151,24 @@ internal sealed class DancyAgentBridge : IDisposable
             mutating: false,
             completionOperationKind: "dancy.debug.multisection-pap-research",
             _ => StartMultiSectionResearch());
+    }
+
+    public void RegisterCorpusResearchControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            CorpusResearchControlId,
+            "Index configured Penumbra animation corpus",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastCorpusResearch?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.animation-corpus-research",
+            _ => StartCorpusResearch());
     }
 
     public AgentBridgeUiActionResult StartSelfTest()
@@ -311,6 +331,47 @@ internal sealed class DancyAgentBridge : IDisposable
         return AgentBridgeUiActionResult.Ok("Dancy multi-section PAP inspection started.", operation.Id);
     }
 
+    public AgentBridgeUiActionResult StartCorpusResearch()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.animation-corpus-research", "Read-only Penumbra animation corpus indexing queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Read-only Penumbra animation corpus indexing is running.");
+                var result = new DancyStandingIdleCorpusResearchRunner().Run();
+                lastCorpusResearch = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Read-only Penumbra animation corpus indexing reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "AnimationCorpusResearchFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["artifactsRetained"] = string.Join(";", result.RetainedArtifacts),
+                        ["corpusMutated"] = "false",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Read-only Penumbra animation corpus indexing crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledAnimationCorpusResearchException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Dancy read-only Penumbra animation corpus indexing started.", operation.Id);
+    }
+
     public void Dispose() => host.Dispose();
 
     private AgentBridgeManifest CreateManifest() => new(
@@ -326,6 +387,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.multisection-pap-research"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.animation-corpus-research"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -341,6 +403,7 @@ internal sealed class DancyAgentBridge : IDisposable
         pushupsWaterRegression = lastPushupsWaterRegression,
         targetCatalogInspection = lastTargetCatalogInspection,
         multiSectionPapResearch = lastMultiSectionResearch,
+        animationCorpusResearch = lastCorpusResearch,
         operations = operations.Snapshot(),
         bridge = new
         {

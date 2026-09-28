@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(360, 275);
+        Size = new Vector2(360, 305);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -88,6 +88,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterMultiSectionResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (inspectedMultiSectionPaps)
             plugin.AgentBridge.StartMultiSectionResearch();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var indexedCorpus = ImGui.Button("Index configured animation corpus");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterCorpusResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (indexedCorpus)
+            plugin.AgentBridge.StartCorpusResearch();
 #endif
 
         if (ImGui.Button("Discord Server"))
