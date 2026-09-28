@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(360, 305);
+        Size = new Vector2(360, 390);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -97,6 +97,51 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterCorpusResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (indexedCorpus)
             plugin.AgentBridge.StartCorpusResearch();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var fingerprintedStandingIdle = ImGui.Button("Fingerprint Standing Idle Havok motions");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterMotionFingerprintResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (fingerprintedStandingIdle)
+            plugin.AgentBridge.StartMotionFingerprintResearch();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var indexedPerMotionCorpus = ImGui.Button("Index Standing Idle per-motion corpus");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterPerMotionCorpusResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (indexedPerMotionCorpus)
+            plugin.AgentBridge.StartPerMotionCorpusResearch();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var validateStandingIdleCandidateOne = ImGui.Button("Validate Male Miqo Standing Idle candidate");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterStandingIdleCandidateOneControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (validateStandingIdleCandidateOne)
+            plugin.AgentBridge.StartStandingIdleCandidateOne();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var inspectActiveStandingIdleCandidateOne = ImGui.Button("Inspect active ogRayrei Male Miqo idle");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterStandingIdleActiveCandidateOneInspectionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (inspectActiveStandingIdleCandidateOne)
+            plugin.AgentBridge.StartActiveStandingIdleCandidateOneInspection();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var validateStandingIdleCandidateTwo = ImGui.Button("Validate second Male Miqo Standing Idle candidate");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterStandingIdleCandidateTwoControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (validateStandingIdleCandidateTwo)
+            plugin.AgentBridge.StartStandingIdleCandidateTwo();
 #endif
 
         if (ImGui.Button("Discord Server"))

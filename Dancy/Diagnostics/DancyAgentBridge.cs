@@ -21,6 +21,11 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
     private const string MultiSectionResearchControlId = "dancy.debug.inspect-multisection-paps";
     private const string CorpusResearchControlId = "dancy.debug.index-animation-corpus";
+    private const string MotionFingerprintResearchControlId = "dancy.debug.fingerprint-standing-idle-motions";
+    private const string PerMotionCorpusResearchControlId = "dancy.debug.index-standing-idle-motion-corpus";
+    private const string StandingIdleActiveCandidateOneInspectionControlId = "dancy.debug.inspect-active-ograyrei-standing-idle";
+    private const string StandingIdleCandidateOneControlId = "dancy.debug.validate-standing-idle-candidate-one";
+    private const string StandingIdleCandidateTwoControlId = "dancy.debug.validate-standing-idle-candidate-two";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -33,6 +38,11 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastTargetCatalogInspection;
     private DancySelfTestResult? lastMultiSectionResearch;
     private DancySelfTestResult? lastCorpusResearch;
+    private DancySelfTestResult? lastMotionFingerprintResearch;
+    private DancySelfTestResult? lastPerMotionCorpusResearch;
+    private DancySelfTestResult? lastStandingIdleActiveCandidateOneInspection;
+    private DancySelfTestResult? lastStandingIdleCandidateOne;
+    private DancySelfTestResult? lastStandingIdleCandidateTwo;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -170,6 +180,80 @@ internal sealed class DancyAgentBridge : IDisposable
             completionOperationKind: "dancy.debug.animation-corpus-research",
             _ => StartCorpusResearch());
     }
+
+    public void RegisterMotionFingerprintResearchControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            MotionFingerprintResearchControlId,
+            "Fingerprint Standing Idle Havok motions",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastMotionFingerprintResearch?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.standing-idle-motion-fingerprint-research",
+            _ => StartMotionFingerprintResearch());
+    }
+
+    public void RegisterPerMotionCorpusResearchControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            PerMotionCorpusResearchControlId,
+            "Index Standing Idle per-motion corpus",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastPerMotionCorpusResearch?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.standing-idle-per-motion-corpus-research",
+            _ => StartPerMotionCorpusResearch());
+    }
+
+    public void RegisterStandingIdleCandidateOneControl(Vector2 min, Vector2 max, bool enabled)
+        => RegisterStandingIdleCandidateControl(
+            StandingIdleCandidateOneControlId,
+            "Validate ogRayrei Male Miqo Standing Idle",
+            min,
+            max,
+            enabled,
+            () => lastStandingIdleCandidateOne?.Summary,
+            StartStandingIdleCandidateOne);
+
+    public void RegisterStandingIdleActiveCandidateOneInspectionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            StandingIdleActiveCandidateOneInspectionControlId,
+            "Inspect active ogRayrei Male Miqo Standing Idle",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastStandingIdleActiveCandidateOneInspection?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.standing-idle-active-inspection",
+            _ => StartActiveStandingIdleCandidateOneInspection());
+    }
+
+    public void RegisterStandingIdleCandidateTwoControl(Vector2 min, Vector2 max, bool enabled)
+        => RegisterStandingIdleCandidateControl(
+            StandingIdleCandidateTwoControlId,
+            "Validate Rust Idle Male Miqo Standing Idle",
+            min,
+            max,
+            enabled,
+            () => lastStandingIdleCandidateTwo?.Summary,
+            StartStandingIdleCandidateTwo);
 
     public AgentBridgeUiActionResult StartSelfTest()
     {
@@ -372,6 +456,203 @@ internal sealed class DancyAgentBridge : IDisposable
         return AgentBridgeUiActionResult.Ok("Dancy read-only Penumbra animation corpus indexing started.", operation.Id);
     }
 
+    public AgentBridgeUiActionResult StartMotionFingerprintResearch()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.standing-idle-motion-fingerprint-research", "Read-only Standing Idle motion fingerprint research queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Read-only Standing Idle motion fingerprint research is running.");
+                var result = new DancyStandingIdleFingerprintResearchRunner().Run();
+                lastMotionFingerprintResearch = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Standing Idle motion fingerprint research reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "StandingIdleMotionFingerprintResearchFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["workspaceRetained"] = "false",
+                        ["penumbraMutated"] = "false",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Standing Idle motion fingerprint research crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStandingIdleMotionFingerprintResearchException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Dancy read-only Standing Idle motion fingerprint research started.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartPerMotionCorpusResearch()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.standing-idle-per-motion-corpus-research", "Read-only Standing Idle per-motion corpus research queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Read-only Standing Idle per-motion corpus research is running.");
+                var result = new DancyStandingIdlePerMotionCorpusResearchRunner().Run();
+                lastPerMotionCorpusResearch = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Standing Idle per-motion corpus research reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "StandingIdlePerMotionCorpusResearchFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["workspaceRetained"] = "false",
+                        ["penumbraMutated"] = "false",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Standing Idle per-motion corpus research crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStandingIdlePerMotionCorpusResearchException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Dancy read-only Standing Idle per-motion corpus research started.", operation.Id);
+    }
+
+    private void RegisterStandingIdleCandidateControl(
+        string id,
+        string name,
+        Vector2 min,
+        Vector2 max,
+        bool enabled,
+        Func<string?> value,
+        Func<AgentBridgeUiActionResult> start)
+    {
+        reviewRegistry.Register(
+            id,
+            name,
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: value(),
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.standing-idle-existing-mod-validation",
+            _ => start());
+    }
+
+    public AgentBridgeUiActionResult StartStandingIdleCandidateOne()
+        => StartStandingIdleCandidateValidation(DancyStandingIdleExistingModRunner.CandidateOne, result => lastStandingIdleCandidateOne = result);
+
+    public AgentBridgeUiActionResult StartActiveStandingIdleCandidateOneInspection()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var candidate = DancyStandingIdleExistingModRunner.CandidateOne;
+        var operation = operations.Begin("dancy.debug.standing-idle-active-inspection", $"Read-only active Standing Idle inspection queued for {candidate.ModName}.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, $"Read-only active Standing Idle inspection is running for {candidate.ModName}.");
+                var result = new DancyStandingIdleExistingModRunner().InspectActive(candidate);
+                lastStandingIdleActiveCandidateOneInspection = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Active Standing Idle inspection reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "StandingIdleActiveInspectionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["penumbraStateMutated"] = "false",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Active Standing Idle inspection crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStandingIdleActiveInspectionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok($"Read-only active Standing Idle inspection started for {candidate.ModName}.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartStandingIdleCandidateTwo()
+        => StartStandingIdleCandidateValidation(DancyStandingIdleExistingModRunner.CandidateTwo, result => lastStandingIdleCandidateTwo = result);
+
+    private AgentBridgeUiActionResult StartStandingIdleCandidateValidation(
+        DancyStandingIdleExistingModRunner.Candidate candidate,
+        Action<DancySelfTestResult> setResult)
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.standing-idle-existing-mod-validation", $"Standing Idle validation queued for {candidate.ModName}.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, $"Standing Idle validation is running for {candidate.ModName}.");
+                var result = new DancyStandingIdleExistingModRunner().Run(candidate);
+                setResult(result);
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Standing Idle existing-mod validation reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "StandingIdleExistingModValidationFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["penumbraPersistentStateMutated"] = "false",
+                        ["temporarySettingRestored"] = result.Passed ? "true" : "unknown",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Standing Idle existing-mod validation crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStandingIdleExistingModValidationException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok($"Standing Idle validation started for {candidate.ModName}.", operation.Id);
+    }
+
     public void Dispose() => host.Dispose();
 
     private AgentBridgeManifest CreateManifest() => new(
@@ -388,6 +669,10 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.multisection-pap-research"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.animation-corpus-research"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-motion-fingerprint-research"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-per-motion-corpus-research"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-active-inspection"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-existing-mod-validation"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -404,6 +689,11 @@ internal sealed class DancyAgentBridge : IDisposable
         targetCatalogInspection = lastTargetCatalogInspection,
         multiSectionPapResearch = lastMultiSectionResearch,
         animationCorpusResearch = lastCorpusResearch,
+        standingIdleMotionFingerprintResearch = lastMotionFingerprintResearch,
+        standingIdlePerMotionCorpusResearch = lastPerMotionCorpusResearch,
+        standingIdleActiveCandidateOneInspection = lastStandingIdleActiveCandidateOneInspection,
+        standingIdleCandidateOne = lastStandingIdleCandidateOne,
+        standingIdleCandidateTwo = lastStandingIdleCandidateTwo,
         operations = operations.Snapshot(),
         bridge = new
         {

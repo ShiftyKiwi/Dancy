@@ -6,10 +6,12 @@ This read-only investigation used the installed Dancy Debug plugin, the active
 Conduit developer bridge, the active VFXEditor developer plugin, current game
 data, and the Penumbra library at `C:\Users\Nick\Documents\FFXIV Mods`.
 
-No Penumbra setting, mod metadata, redirect, generated PAP, writer path, or
-creator asset was changed. The machine-readable index is deliberately local
-and untracked at `Research/PenumbraAnimationCorpusIndex.json`; it contains only
-metadata, structure, and hashes.
+No persistent Penumbra setting, mod metadata, redirect, generated PAP, writer
+path, or creator asset was changed. The later player-scoped validation used a
+dedicated temporary setting only after a restoration preflight, then removed it
+and verified the original state. The machine-readable index is deliberately
+local and untracked at `Research/PenumbraAnimationCorpusIndex.json`; it contains
+only metadata, structure, and hashes.
 
 ## Runtime Observation Capability
 
@@ -166,10 +168,98 @@ independently in creator packages. It does not prove Havok-section independence
 or an engine-supported partial replacement. The planner must remain fail-closed
 and no Standing Idle writer, redirect, metadata, or UI enablement is justified.
 
-## Next Recommended Step
+## Previous Recommended Step
 
-Create one opt-in, player-scoped visual research protocol for a known working
-corpus example that retains TMB 0 while changing TMB 1, with an exact setting
-snapshot and restoration check. Its sole purpose should be to compare observed
-Standing Idle behavior against its vanilla state; it must not generate or write
-a Dancy PAP.
+The opt-in, player-scoped validation protocol described above has now been
+implemented and run. It is intentionally Debug-only, leaves no temporary
+setting behind, and still does not generate or write a Dancy PAP.
+
+## Per-Motion Havok Fingerprinting
+
+The active VFXEditor developer plugin now exposes a read-only selected-motion
+fingerprint endpoint. It loads a PAP through VFXEditor's already-initialized
+Havok model, samples the selected `PapMotion` against the matching race
+skeleton at 30 FPS, and SHA-256 hashes the normalized per-bone local
+translation, rotation, and scale samples. The fingerprint contains the binding
+of transform tracks to skeleton bones, but does not incorporate the requested
+motion index or repeat the whole shared Havok payload hash.
+
+This method was validated with repeated reads of a single-motion Water PAP,
+the installed single-motion Push-ups source, and both motions of the local
+player's canonical Standing Idle PAP. Repeated fingerprints were stable. The
+local `c0701` Standing Idle PAP has distinct motion fingerprints for Havok 0
+and Havok 1, with 95 and 97 animated tracks respectively, so the result is
+motion-specific rather than a shared-container identity.
+
+The corrected read-only per-motion corpus pass completed `4/4 PASS`:
+
+| Measure | Result |
+| --- | ---: |
+| Canonical two-section mappings | 136 |
+| Readable, matching-rig comparisons | 80 |
+| Unknown comparisons | 56 |
+| Motion 0 same, Motion 1 changed, TMB 0 same, TMB 1 changed | 5 |
+| Corpus files / bytes | 69,050 / 206,509,610,995 |
+| Deterministic source-hash samples | 64 unchanged |
+
+The full observed matrix was: 50 changed/changed/changed/changed; 16
+changed/changed/same/changed; five changed/changed/same/same; five
+same/changed/same/changed; two same/same/same/same; one
+changed/changed/changed/same; and one same/changed/same/same. Values are in
+`Motion 0 / Motion 1 / TMB 0 / TMB 1` order. The five strongest natural
+experiments include Coldship's Rust Idle for `c0101`, three Keow MoogleLover
+Eorzean Nightlife options for `c0801`, and one Eorzean Nightlife option for
+`c1401`.
+
+This is strong evidence that installed creator PAPs can retain the sampled
+Havok 0 motion and TMB 0 while changing sampled Havok 1 and TMB 1. It is not a
+serialized-section boundary or a safe merge/write recipe. The existing writer
+continues to fail closed for multi-section Standing Idle PAPs.
+
+## Player-Scoped Existing-Mod Validation
+
+Two existing c0701-compatible installed mods were tested only through the
+supported `SetTemporaryModSettingsPlayer` / `RemoveTemporaryModSettingsPlayer`
+Penumbra API. Before either temporary setting was applied, Dancy captured the
+local player's effective collection, candidate persistent state and group
+selections, current idle resolution, relevant Changed Items count, and
+candidate PAP SHA-256. The test refuses to run if a candidate already has any
+temporary setting, because replacing an unknown temporary owner would not be
+exactly reversible.
+
+| Candidate | Author | Option | Motion 0 / 1 | TMB 0 / 1 | Runtime redirect | Restoration |
+| --- | --- | --- | --- | --- | --- | --- |
+| Male Miqo Relaxed Default Idle | ogRayrei | DefaultData | changed / changed | same / changed | c0701 path resolved to the candidate PAP | PASS |
+| Rust Idle | Coldship | `Races: Miqo'te` | changed / changed | changed / changed | c0701 path resolved to the selected c0101 candidate PAP | PASS |
+
+The Rust option was already persistently enabled for the local player before
+the experiment. Dancy temporarily disabled it to prove a candidate-free
+control mapping, restored that state, then used its isolated Miqo'te option for
+the timed test. After both tests, DAB readback confirmed the original effective
+collection, persistent enabled state, multi-option selection, resolved path,
+and candidate PAP hashes exactly matched their snapshots. No collection,
+metadata, redirect, archive, or source file was changed.
+
+Conduit ran four paced `/changepose` inputs for each timed observation window.
+There is no supported pose or skeleton oracle. Human validation confirmed that
+Rust Idle animated correctly through the idle-pose cycle with no T-pose,
+freezing, or visible corruption. `[IV] ogRayrei Male Miqo Relaxed Default Idle`
+was subsequently enabled normally for Dalkand. A separate DAB read-only check
+confirmed that its persistent setting was enabled and the live c0701 idle path
+resolved directly to its installed PAP before human validation confirmed a
+clean full idle-pose cycle. Neither visual result is inferred from redirection
+alone.
+
+## Evidence Escalation Decision
+
+| Claim | File structure | Per-motion fingerprint | Creator corpus | Player-scoped test | Confidence |
+| --- | --- | --- | --- | --- | --- |
+| `cbnm_id0` / Havok 1 / TMB 1 is the ordinary Standing Idle motion | Type 0, explicit Havok 1 binding | distinct local motion 1; five natural examples change motion 1 while retaining motion 0 | repeated working complete PAP combinations | Rust Idle completed the c0701 pose cycle without visible corruption | MEDIUM |
+| `cbna_add_dmg_f` / Havok 0 / TMB 0 can remain target-native | Type 15, explicit Havok 0 binding | five natural examples retain sampled motion 0 and TMB 0 | present across Rust Idle and Eorzean Nightlife examples | Rust changed both motions/TMBs; no player-compatible natural example was visually confirmed | MEDIUM |
+| The sections are independently replaceable by Dancy | two explicit Havok indices, one shared container | motion identities can differ independently in existing PAPs | five exact natural examples | Rust validates a complete PAP only; no partial write was attempted | LOW |
+
+Standing Idle remains `MultiSectionUnknown`. No Dancy Standing Idle PAP was
+written, no production target was enabled, and no production PAP writer was
+changed. The evidence improves semantic confidence in the observed existing
+PAPs, but does not establish an engine-level safe partial replacement or
+writer readiness.
