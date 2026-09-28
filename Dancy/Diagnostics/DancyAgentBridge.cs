@@ -19,6 +19,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string SelfTestControlId = "dancy.debug.run-selftest";
     private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
     private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
+    private const string MultiSectionResearchControlId = "dancy.debug.inspect-multisection-paps";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -29,6 +30,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastSelfTest;
     private DancySelfTestResult? lastPushupsWaterRegression;
     private DancySelfTestResult? lastTargetCatalogInspection;
+    private DancySelfTestResult? lastMultiSectionResearch;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -129,6 +131,24 @@ internal sealed class DancyAgentBridge : IDisposable
             mutating: false,
             completionOperationKind: "dancy.debug.target-catalog",
             _ => StartTargetCatalogInspection());
+    }
+
+    public void RegisterMultiSectionResearchControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            MultiSectionResearchControlId,
+            "Inspect multi-section PAP research fixtures",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastMultiSectionResearch?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.multisection-pap-research",
+            _ => StartMultiSectionResearch());
     }
 
     public AgentBridgeUiActionResult StartSelfTest()
@@ -251,6 +271,46 @@ internal sealed class DancyAgentBridge : IDisposable
         return AgentBridgeUiActionResult.Ok("Current target catalog inspection started.", operation.Id);
     }
 
+    public AgentBridgeUiActionResult StartMultiSectionResearch()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.multisection-pap-research", "Multi-section PAP inspection queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Multi-section PAP inspection is running.");
+                var result = new DancyMultiSectionPapResearchRunner().Run();
+                lastMultiSectionResearch = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Multi-section PAP inspection reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "MultiSectionPapResearchFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["artifactsRetained"] = string.Join(";", result.RetainedArtifacts),
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Multi-section PAP inspection crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledMultiSectionPapResearchException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Dancy multi-section PAP inspection started.", operation.Id);
+    }
+
     public void Dispose() => host.Dispose();
 
     private AgentBridgeManifest CreateManifest() => new(
@@ -265,6 +325,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.selftest"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.multisection-pap-research"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -279,6 +340,7 @@ internal sealed class DancyAgentBridge : IDisposable
         selfTest = lastSelfTest,
         pushupsWaterRegression = lastPushupsWaterRegression,
         targetCatalogInspection = lastTargetCatalogInspection,
+        multiSectionPapResearch = lastMultiSectionResearch,
         operations = operations.Snapshot(),
         bridge = new
         {

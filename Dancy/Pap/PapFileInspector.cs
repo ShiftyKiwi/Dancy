@@ -21,7 +21,11 @@ public static class PapFileInspector
     private const int HeaderSize = 26;
     private const int AnimationHeaderSize = 40;
     private const int AnimationNameSize = 32;
+    private const int AnimationTypeOffset = 32;
     private const int AnimationHavokIndexOffset = 34;
+    private const int AnimationFaceFlagOffset = 36;
+
+    public sealed record PapTimelineSectionLocation(int Index, int Offset, int Size);
 
     public sealed class PapFileInspection
     {
@@ -30,8 +34,11 @@ public static class PapFileInspector
         public int HavokOffset { get; init; }
         public int TimelineOffset { get; init; }
         public IReadOnlyList<string> AnimationNames { get; init; } = Array.Empty<string>();
+        public IReadOnlyList<int> AnimationTypes { get; init; } = Array.Empty<int>();
         public IReadOnlyList<int> HavokIndices { get; init; } = Array.Empty<int>();
+        public IReadOnlyList<bool> FaceAnimationFlags { get; init; } = Array.Empty<bool>();
         public IReadOnlyList<int> TimelineSectionSizes { get; init; } = Array.Empty<int>();
+        public IReadOnlyList<PapTimelineSectionLocation> TimelineSections { get; init; } = Array.Empty<PapTimelineSectionLocation>();
         public long Length { get; init; }
     }
 
@@ -84,15 +91,20 @@ public static class PapFileInspector
             throw new InvalidDataException("PAP header offsets are invalid.");
 
         var names = new List<string>(animationCount);
+        var types = new List<int>(animationCount);
         var havokIndices = new List<int>(animationCount);
+        var faceFlags = new List<bool>(animationCount);
         for (var index = 0; index < animationCount; index++)
         {
             var nameOffset = animationHeaderOffset + index * AnimationHeaderSize;
             names.Add(ReadNullTerminatedString(bytes, nameOffset, AnimationNameSize));
+            types.Add(BitConverter.ToInt16(bytes, nameOffset + AnimationTypeOffset));
             havokIndices.Add(BitConverter.ToInt16(bytes, nameOffset + AnimationHavokIndexOffset));
+            faceFlags.Add(ReadInt32(bytes, nameOffset + AnimationFaceFlagOffset) == 1);
         }
 
         var sections = new List<int>(animationCount);
+        var sectionLocations = new List<PapTimelineSectionLocation>(animationCount);
         var position = timelineOffset;
         var customOffset = timelineOffset % 4;
         for (var index = 0; index < animationCount; index++)
@@ -105,6 +117,7 @@ public static class PapFileInspector
                 throw new InvalidDataException("TMB section size is invalid.");
 
             sections.Add(size);
+            sectionLocations.Add(new PapTimelineSectionLocation(index, position, size));
             position += size;
             if (index < animationCount - 1)
             {
@@ -120,8 +133,11 @@ public static class PapFileInspector
             HavokOffset = havokOffset,
             TimelineOffset = timelineOffset,
             AnimationNames = names,
+            AnimationTypes = types,
             HavokIndices = havokIndices,
+            FaceAnimationFlags = faceFlags,
             TimelineSectionSizes = sections,
+            TimelineSections = sectionLocations,
             Length = bytes.Length,
         };
     }

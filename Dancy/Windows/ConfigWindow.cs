@@ -19,7 +19,11 @@ public class ConfigWindow : Window, IDisposable
         Flags = ImGuiWindowFlags.NoResize | ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoScrollbar |
                 ImGuiWindowFlags.NoScrollWithMouse;
 
+#if DEBUG
+        Size = new Vector2(360, 275);
+#else
         Size = new Vector2(360, 245);
+#endif
         SizeCondition = ImGuiCond.Always;
 
         this.plugin = plugin;
@@ -75,6 +79,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterTargetCatalogInspectionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (inspectedTargetCatalog)
             plugin.AgentBridge.StartTargetCatalogInspection();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var inspectedMultiSectionPaps = ImGui.Button("Inspect multi-section PAP research fixtures");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterMultiSectionResearchControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (inspectedMultiSectionPaps)
+            plugin.AgentBridge.StartMultiSectionResearch();
 #endif
 
         if (ImGui.Button("Discord Server"))

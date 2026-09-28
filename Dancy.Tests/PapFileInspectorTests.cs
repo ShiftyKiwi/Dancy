@@ -12,8 +12,13 @@ public class PapFileInspectorTests
 
         Assert.Equal(1, inspection.AnimationCount);
         Assert.Equal("fixture_event", Assert.Single(inspection.AnimationNames));
+        Assert.Equal(0, Assert.Single(inspection.AnimationTypes));
         Assert.Equal(7, Assert.Single(inspection.HavokIndices));
+        Assert.False(Assert.Single(inspection.FaceAnimationFlags));
         Assert.Equal(8, Assert.Single(inspection.TimelineSectionSizes));
+        var timeline = Assert.Single(inspection.TimelineSections);
+        Assert.Equal(70, timeline.Offset);
+        Assert.Equal(8, timeline.Size);
     }
 
     [Theory]
