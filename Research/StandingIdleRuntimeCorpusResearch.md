@@ -409,3 +409,21 @@ For this already proven topology, that structural and runtime chain is the
 automation-first acceptance contract. Human visual confirmation is required for
 a new topology, a new replacement model, or an unexplained structural/runtime
 mismatch, not for every regression of this one.
+
+## Current Game Variant Resolution
+
+`PapResolver` enumerates all 18 normal playable GenderRace identities and
+checks both `a0001` and `a0002` for the canonical
+`bt_common/resident/idle.pap` path. The current client exposes 16 distinct
+Standing Idle PAP targets.
+
+- `c0301` (Highlander Male) has its own base skeleton but no canonical Standing
+  Idle PAP in either checked animation layer.
+- `c1201` (Lalafell Female) has its own base skeleton but no canonical Standing
+  Idle PAP in either checked animation layer.
+
+The ActionTimeline data provides only the shared `normal/idle` key and no
+asset-level alias for either identity. Dancy therefore does not infer an alias
+to another race's PAP: these identities have no distinct canonical Standing
+Idle target in the current game data and are correctly absent from the
+asset-backed target list.

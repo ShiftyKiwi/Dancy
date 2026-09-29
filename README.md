@@ -26,6 +26,11 @@ the original mod's options and files untouched.
 4. Review Dancy's mapping preview, source/target variants, and structural PAP
    compatibility result. Create the override only when the preflight permits it.
 
+Standing Idle uses the target's native idle structure. Dancy substitutes the
+selected source motion while keeping the target's required supporting motion
+and timing. A variant whose structure is not supported stays disabled
+automatically.
+
 Target search spans these categories and labels each result with its playback
 behavior and state context. Raw paths are retained in the expandable Details
 section rather than crowding the normal summary.
@@ -51,10 +56,11 @@ contain local file paths.
 
 ## Known Limitations
 
-- Standing Idle is supported only for canonical `normal/idle` variants that
-  pass Dancy's exact two-section preflight. Dancy replaces the primary idle
-  motion while preserving the target-native auxiliary motion and both timelines.
-  This does not enable arbitrary multi-section PAP editing.
+- Standing Idle is available under `Poses & Idles` for current game variants
+  that pass validation. Dancy replaces the selected source motion while
+  preserving the target's required supporting motion and timing. Unsupported
+  structures stay disabled automatically; this does not enable arbitrary
+  multi-section PAP editing.
 - Some `One-shot / Advanced` targets finish naturally because their duration is
   controlled by the game.
 - A semantic target classification never bypasses structural PAP preflight.
