@@ -26,6 +26,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string StandingIdleActiveCandidateOneInspectionControlId = "dancy.debug.inspect-active-ograyrei-standing-idle";
     private const string StandingIdleCandidateOneControlId = "dancy.debug.validate-standing-idle-candidate-one";
     private const string StandingIdleCandidateTwoControlId = "dancy.debug.validate-standing-idle-candidate-two";
+    private const string StandingIdleProductionControlId = "dancy.debug.run-standing-idle-production-e2e";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -43,6 +44,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastStandingIdleActiveCandidateOneInspection;
     private DancySelfTestResult? lastStandingIdleCandidateOne;
     private DancySelfTestResult? lastStandingIdleCandidateTwo;
+    private DancySelfTestResult? lastStandingIdleProduction;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -254,6 +256,24 @@ internal sealed class DancyAgentBridge : IDisposable
             enabled,
             () => lastStandingIdleCandidateTwo?.Summary,
             StartStandingIdleCandidateTwo);
+
+    public void RegisterStandingIdleProductionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            StandingIdleProductionControlId,
+            "Run c0701 Standing Idle production end-to-end test",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastStandingIdleProduction?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.standing-idle-production-e2e",
+            _ => StartStandingIdleProduction());
+    }
 
     public AgentBridgeUiActionResult StartSelfTest()
     {
@@ -610,6 +630,49 @@ internal sealed class DancyAgentBridge : IDisposable
     public AgentBridgeUiActionResult StartStandingIdleCandidateTwo()
         => StartStandingIdleCandidateValidation(DancyStandingIdleExistingModRunner.CandidateTwo, result => lastStandingIdleCandidateTwo = result);
 
+    public AgentBridgeUiActionResult StartStandingIdleProduction()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.standing-idle-production-e2e", "c0701 Standing Idle production test queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Dancy is generating and verifying the fixed c0701 Standing Idle output before the external runtime observation window.");
+                var result = new DancyStandingIdleProductionRunner().Run();
+                lastStandingIdleProduction = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed
+                        ? "Standing Idle production output passed structural checks and was cleaned up; independent runtime resource observation is reported separately."
+                        : "Standing Idle production end-to-end test reported a failure.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "StandingIdleProductionE2EFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["externalRuntimeObservation"] = "pending",
+                        ["dancyTestOptionCleaned"] = result.Passed ? "true" : "unknown",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Standing Idle production end-to-end test crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStandingIdleProductionE2EException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Standing Idle production end-to-end test started. It will temporarily activate the generated c0701 override for independent runtime observation, then clean up only the test option.", operation.Id);
+    }
+
     private AgentBridgeUiActionResult StartStandingIdleCandidateValidation(
         DancyStandingIdleExistingModRunner.Candidate candidate,
         Action<DancySelfTestResult> setResult)
@@ -673,6 +736,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-per-motion-corpus-research"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-active-inspection"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-existing-mod-validation"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-production-e2e"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -694,6 +758,7 @@ internal sealed class DancyAgentBridge : IDisposable
         standingIdleActiveCandidateOneInspection = lastStandingIdleActiveCandidateOneInspection,
         standingIdleCandidateOne = lastStandingIdleCandidateOne,
         standingIdleCandidateTwo = lastStandingIdleCandidateTwo,
+        standingIdleProduction = lastStandingIdleProduction,
         operations = operations.Snapshot(),
         bridge = new
         {

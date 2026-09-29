@@ -25,7 +25,7 @@ internal sealed class DancyTargetCatalogInspector
 
         RunCase(cases, "Looping emote target", "catalog", "Water is a normal looping-emote target.", () =>
             Inspect("Water", TargetBehavior.LoopingEmote, TargetContext.Emote, minVariants: 1, requireSingleSection: true));
-        RunCase(cases, "Standing idle target", "catalog", "Standing Idle is discovered as a persistent state and reported as structurally unsupported.", () =>
+        RunCase(cases, "Standing idle target", "catalog", "Standing Idle exposes every currently resolvable variant only when each passes Dancy's fixed target-centric topology preflight.", () =>
             InspectStandingIdle());
         RunCase(cases, "Chair sit target", "catalog", "Sit is a persistent chair-state target with current PAP variants.", () =>
             Inspect("Sit", TargetBehavior.PersistentPose, TargetContext.ChairSit, minVariants: 18, requireSingleSection: true));
@@ -73,10 +73,17 @@ internal sealed class DancyTargetCatalogInspector
             var paths = PapResolver.ResolvePapFiles(target.PrimaryTimelineKey);
             if (paths.Count == 0)
                 throw new InvalidOperationException("normal/idle did not resolve any current player PAPs.");
-            var inspection = PapEditor.InspectTargetPap(paths[0]);
-            if (inspection.AnimationCount <= 1 || inspection.TimelineSectionSizes.Count <= 1)
-                throw new InvalidOperationException("normal/idle no longer demonstrates the expected multi-section structural preflight boundary.");
-            return $"{paths.Count} variant(s); {inspection.AnimationCount} animation/header sections and {inspection.TimelineSectionSizes.Count} TMB sections on {paths[0]}.";
+            var variants = StandingIdleVariantCatalog.Analyze(paths
+                .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path))));
+            if (variants.TotalVariantCount != 16)
+                throw new InvalidOperationException($"normal/idle resolved {variants.TotalVariantCount} current variants; expected 16.");
+            if (!variants.AllVariantsSupported)
+            {
+                var rejected = variants.Variants.First(variant => !variant.IsSupported);
+                throw new InvalidOperationException($"Standing Idle rejected {rejected.Character.DisplayName}: {rejected.Reason}");
+            }
+            return string.Join("; ", variants.Variants.Select(variant =>
+                $"{variant.Character.DisplayName}: motion 0 replaceable, motion 1/TMB 0-1 preserved"));
         });
 
     private static string InspectPoseFamilies()

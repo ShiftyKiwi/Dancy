@@ -64,7 +64,14 @@ namespace Dancy.Windows
         private string? lastDiagnostics;
         private readonly OverrideService overrideService = new();
 
-        private sealed record TargetPapStatus(bool IsSupported, string Summary, string Detail);
+        private sealed record TargetPapStatus(
+            bool IsSupported,
+            string Summary,
+            string Detail,
+            int SupportedVariantCount = 0,
+            int TotalVariantCount = 0,
+            IReadOnlyList<string>? SupportedGamePaths = null,
+            bool UsesStandingIdleWriter = false);
 
         // Step navigation
         private WizardStep currentStep = WizardStep.SelectMod;
@@ -885,7 +892,9 @@ namespace Dancy.Windows
                         ? TargetSemantics.DisplayName(emote.Context)
                         : trigger);
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(GetTargetPaths(emote).Count.ToString());
+                    ImGui.TextUnformatted(targetStatus.UsesStandingIdleWriter
+                        ? $"{targetStatus.SupportedVariantCount} / {targetStatus.TotalVariantCount}"
+                        : GetTargetPaths(emote).Count.ToString());
                     ImGui.TableNextColumn();
                     if (!targetStatus.IsSupported)
                         ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.45f, 1f));
@@ -932,8 +941,11 @@ namespace Dancy.Windows
                     ? selectedReplacementEmote.Command
                     : selectedReplacementEmote.Trigger;
                 ImGui.TextWrapped($"Trigger: {(string.IsNullOrWhiteSpace(selectedTrigger) ? "State-managed" : selectedTrigger)}");
+                var targetStatus = GetTargetPapStatus(selectedReplacementEmote);
                 var targetPaths = GetTargetPaths(selectedReplacementEmote);
-                ImGui.Text($"Variants: {targetPaths.Count}");
+                ImGui.Text(targetStatus.UsesStandingIdleWriter
+                    ? $"Variants: {targetStatus.SupportedVariantCount} supported / {targetStatus.TotalVariantCount} current"
+                    : $"Variants: {targetPaths.Count}");
                 var compatibilityColor = previewCompatibility.Status == PapCompatibilityStatus.Unsupported
                     ? new Vector4(1f, 0.5f, 0.45f, 1f)
                     : previewCompatibility.Status == PapCompatibilityStatus.CompatibleWithWarning
@@ -947,6 +959,12 @@ namespace Dancy.Windows
                     ImGui.TextWrapped($"Timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
                     if (!string.IsNullOrWhiteSpace(selectedReplacementEmote.ClassificationEvidence))
                         ImGui.TextWrapped($"Classification evidence: {selectedReplacementEmote.ClassificationEvidence}");
+                    if (targetStatus.UsesStandingIdleWriter)
+                    {
+                        ImGui.TextUnformatted("Structure: Multi-section");
+                        ImGui.TextUnformatted("Dancy strategy: Replace primary idle motion");
+                        ImGui.TextUnformatted("Preserve: Target-native auxiliary motion and timelines");
+                    }
                     foreach (var path in targetPaths)
                     {
                         var character = GamePathIdentity.Parse(path).Character;
@@ -955,7 +973,7 @@ namespace Dancy.Windows
                     ImGui.TreePop();
                 }
 
-                DrawMappingPreview(previewPlan);
+                DrawMappingPreview(previewPlan, selectedReplacementEmote, previewCompatibility);
 
                 ImGui.Spacing();
 
@@ -1022,7 +1040,7 @@ namespace Dancy.Windows
             LuminaEmote target,
             IReadOnlyList<ParsedEmoteOverride> sourceEntries)
         {
-            var targetPaths = GetTargetPaths(target);
+            var targetPaths = GetCompatibleTargetPaths(target);
             var sourceAnimation = source.LogicalAnimations.FirstOrDefault(animation => animation.Paths.Any(sourceEntries.Contains))
                 ?? source.LogicalAnimations.FirstOrDefault();
             return OverridePlanner.Create(new OverridePlanRequest
@@ -1056,6 +1074,14 @@ namespace Dancy.Windows
             return paths;
         }
 
+        private IReadOnlyList<string> GetCompatibleTargetPaths(LuminaEmote target)
+        {
+            var status = GetTargetPapStatus(target);
+            return status.UsesStandingIdleWriter && status.SupportedGamePaths is { Count: > 0 }
+                ? status.SupportedGamePaths
+                : GetTargetPaths(target);
+        }
+
         private TargetPapStatus GetTargetPapStatus(LuminaEmote target)
         {
             var targetId = string.IsNullOrWhiteSpace(target.TargetId) ? target.PrimaryTimelineKey : target.TargetId;
@@ -1071,14 +1097,39 @@ namespace Dancy.Windows
 
             try
             {
-                var inspections = paths.Select(PapEditor.InspectTargetPap).ToList();
-                var complex = inspections.FirstOrDefault(inspection => inspection.AnimationCount != 1 || inspection.TimelineSectionSizes.Count != 1);
-                return targetPapStatusById[targetId] = complex is null
-                    ? new TargetPapStatus(true, "PAP ready", "This target's current PAP variants satisfy Dancy's one-animation, one-TMB-section preflight.")
-                    : new TargetPapStatus(
-                        false,
-                        $"Unsupported: {complex.AnimationCount} animation / {complex.TimelineSectionSizes.Count} TMB",
-                        $"Dancy recognizes {target.Name} as {TargetSemantics.DisplayName(target.Behavior)} / {TargetSemantics.DisplayName(target.Context)}, but its PAP has {complex.AnimationCount} animation sections and {complex.TimelineSectionSizes.Count} TMB sections. Dancy only rewrites one-animation, one-TMB target PAPs; choose a PAP-ready target instead.");
+                var inspections = paths
+                    .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path)))
+                    .ToList();
+                if (IsCanonicalStandingIdleTarget(target))
+                {
+                    var variants = StandingIdleVariantCatalog.Analyze(inspections);
+                    var detail = variants.AllVariantsSupported
+                        ? "This target uses Dancy's validated multi-section Standing Idle strategy: replace the primary idle motion while preserving target-native auxiliary motion and timelines."
+                        : $"Only {variants.SupportedVariantCount} of {variants.TotalVariantCount} current variants match Dancy's exact Standing Idle topology. Unsupported variants remain excluded.";
+                    return targetPapStatusById[targetId] = new TargetPapStatus(
+                        variants.HasSupportedVariants,
+                        variants.HasSupportedVariants ? "Compatible" : "Unsupported: topology mismatch",
+                        detail,
+                        variants.SupportedVariantCount,
+                        variants.TotalVariantCount,
+                        variants.SupportedGamePaths,
+                        UsesStandingIdleWriter: true);
+                }
+
+                if (inspections.All(inspection => inspection.Inspection.AnimationCount == 1 && inspection.Inspection.TimelineSectionSizes.Count == 1))
+                {
+                    return targetPapStatusById[targetId] = new TargetPapStatus(
+                        true,
+                        "PAP ready",
+                        "This target's current PAP variants satisfy Dancy's one-animation, one-TMB-section preflight.");
+                }
+
+                var complex = inspections.Select(inspection => inspection.Inspection)
+                    .FirstOrDefault(inspection => inspection.AnimationCount != 1 || inspection.TimelineSectionSizes.Count != 1);
+                return targetPapStatusById[targetId] = new TargetPapStatus(
+                    false,
+                    $"Unsupported: {complex?.AnimationCount ?? 0} animation / {complex?.TimelineSectionSizes.Count ?? 0} TMB",
+                    $"Dancy recognizes {target.Name} as {TargetSemantics.DisplayName(target.Behavior)} / {TargetSemantics.DisplayName(target.Context)}, but its PAP does not match either Dancy's one-section structure or the fixed Standing Idle motion-0 topology. Dancy will not rewrite an arbitrary multi-section target.");
             }
             catch (Exception exception)
             {
@@ -1108,7 +1159,9 @@ namespace Dancy.Windows
                     if (!PathSafety.TryResolveInsideRoot(modFolder, copy.SourcePapPath, out var sourcePath))
                         throw new InvalidOperationException($"Dancy refused an unsafe source PAP path: {copy.SourcePapPath}");
                     var source = PapFileInspector.InspectFile(sourcePath);
-                    var targets = copy.TargetGamePaths.Select(PapEditor.InspectTargetPap).ToList();
+                    var targets = copy.TargetGamePaths
+                        .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path)))
+                        .ToList();
                     return PapCompatibilityPreflight.Evaluate(source, targets);
                 });
                 return PapCompatibilityPreflight.Combine(results);
@@ -1119,7 +1172,7 @@ namespace Dancy.Windows
             }
         }
 
-        private static void DrawMappingPreview(OverridePlan plan)
+        private static void DrawMappingPreview(OverridePlan plan, LuminaEmote target, PapCompatibilityResult compatibility)
         {
             ImGui.Spacing();
             ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Mapping preview");
@@ -1129,17 +1182,32 @@ namespace Dancy.Windows
                 return;
             }
 
+            if (IsCanonicalStandingIdleTarget(target) && compatibility.WriteStrategy == PapOverrideWriteStrategy.StandingIdleMotion0)
+            {
+                ImGui.TextUnformatted($"Target: {target.Name}");
+                ImGui.TextUnformatted("Strategy: Target-native multi-section shell");
+            }
+
             foreach (var copy in plan.PapCopies)
             {
                 var strategies = string.Join(", ", copy.MatchResults
                     .Select(result => result.Strategy.ToString())
                     .Distinct(StringComparer.Ordinal));
-                ImGui.TextWrapped($"{copy.SourcePapPath} -> {copy.TargetGamePaths.Count} target path(s) [{strategies}]");
+                var appliesTo = copy.TargetGamePaths
+                    .Select(path => GamePathIdentity.Parse(path).Character)
+                    .Where(character => character.IsKnown)
+                    .Select(character => character.DisplayName)
+                    .Distinct(StringComparer.OrdinalIgnoreCase);
+                ImGui.TextWrapped($"Source: {copy.SourcePapPath}");
+                ImGui.TextWrapped($"Applies to: {string.Join(", ", appliesTo)} [{strategies}]");
             }
 
             foreach (var warning in plan.Warnings)
                 ImGui.TextWrapped($"Warning: {warning}");
         }
+
+        private static bool IsCanonicalStandingIdleTarget(LuminaEmote target)
+            => string.Equals(target.PrimaryTimelineKey, "normal/idle", StringComparison.OrdinalIgnoreCase);
 
         private async Task CreateOverrideAsync(
             RemappableOption source,
@@ -1218,7 +1286,15 @@ namespace Dancy.Windows
             }
 
             foreach (var patch in execution.PapResults)
-                diagnostics.AppendLine($"Patched: {patch.TargetGamePath} -> {patch.EventIdentifier} ({patch.PatchedTimelineEntries} timeline entries)");
+            {
+                diagnostics.AppendLine($"Patched: {patch.TargetGamePath} -> {patch.EventIdentifier} ({patch.PatchedTimelineEntries} timeline entries; {patch.WriteStrategy})");
+                if (patch.WriteStrategy == PapOverrideWriteStrategy.StandingIdleMotion0)
+                {
+                    diagnostics.AppendLine($"  source motion 0 fingerprint: {patch.SourceMotionFingerprint}");
+                    diagnostics.AppendLine($"  preserved target motion 1 fingerprint: {patch.PreservedTargetMotionFingerprint}");
+                    diagnostics.AppendLine($"  preserved target TMB hashes: {string.Join(", ", patch.PreservedTargetTimelineHashes)}");
+                }
+            }
             foreach (var warning in plan.Warnings)
                 diagnostics.AppendLine($"Warning: {warning}");
 

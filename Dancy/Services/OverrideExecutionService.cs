@@ -80,15 +80,50 @@ public sealed class OverrideExecutionService
 
                 var sourceInspection = PapFileInspector.InspectFile(sourcePapPath);
                 var targetInspections = OnFrameworkThread(() => copy.TargetGamePaths
-                    .Select(PapEditor.InspectTargetPap)
+                    .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path)))
                     .ToList());
-                var compatibility = PapCompatibilityPreflight.Evaluate(sourceInspection, targetInspections);
-                compatibilityResults.Add(compatibility);
-                if (!compatibility.CanCreate)
-                    throw new InvalidOperationException($"Dancy cannot safely create this override: {compatibility.Reason}");
+                var targetStrategies = targetInspections
+                    .Select(target => (Target: target, Compatibility: PapCompatibilityPreflight.Evaluate(sourceInspection, target)))
+                    .ToList();
+                compatibilityResults.AddRange(targetStrategies.Select(pair => pair.Compatibility));
+                var unsupported = targetStrategies.FirstOrDefault(pair => !pair.Compatibility.CanCreate);
+                if (unsupported.Target is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Dancy cannot safely create {unsupported.Target.GamePath}: {unsupported.Compatibility.Reason}");
+                }
 
-                var targetEvents = OnFrameworkThread(() => copy.TargetGamePaths
-                    .Select(path => (GamePath: path, EventIdentifier: PapEditor.ReadTargetEventIdentifier(path)))
+                foreach (var standingIdle in targetStrategies.Where(pair => pair.Compatibility.WriteStrategy == PapOverrideWriteStrategy.StandingIdleMotion0))
+                {
+                    var outputRelativePath = BuildOutputPathForTarget(copy.OutputRelativePath, standingIdle.Target.GamePath);
+                    if (!PathSafety.TryResolveInsideRoot(modFolder, outputRelativePath, out var outputPath))
+                        throw new InvalidOperationException($"Dancy refused an unsafe generated PAP path: {outputRelativePath}");
+
+                    var temporaryOutput = CreateTemporaryPapPath(outputPath);
+                    var transaction = CreateTransaction(outputPath);
+                    transactions.Add(transaction);
+                    try
+                    {
+                        var patchResult = OnFrameworkThread(() => PapEditor.ApplyStandingIdleMotion0Override(
+                            standingIdle.Target.GamePath,
+                            sourcePapPath,
+                            temporaryOutput));
+                        File.Move(temporaryOutput, outputPath, overwrite: true);
+                        papResults.Add(patchResult);
+                        generatedFiles.Add(outputRelativePath);
+                    }
+                    finally
+                    {
+                        if (File.Exists(temporaryOutput))
+                            File.Delete(temporaryOutput);
+                    }
+
+                    mappings[standingIdle.Target.GamePath] = outputRelativePath;
+                }
+
+                var targetEvents = OnFrameworkThread(() => targetStrategies
+                    .Where(pair => pair.Compatibility.WriteStrategy == PapOverrideWriteStrategy.SingleSectionEventPatch)
+                    .Select(pair => (GamePath: pair.Target.GamePath, EventIdentifier: PapEditor.ReadTargetEventIdentifier(pair.Target.GamePath)))
                     .ToList());
                 var eventGroups = targetEvents
                     .GroupBy(pair => pair.EventIdentifier, StringComparer.OrdinalIgnoreCase)
@@ -151,6 +186,22 @@ public sealed class OverrideExecutionService
         var extension = Path.GetExtension(baseRelativePath);
         var withoutExtension = baseRelativePath[..^extension.Length];
         return $"{withoutExtension}-{ShortHash(eventIdentifier)}{extension}";
+    }
+
+    private static string BuildOutputPathForTarget(string baseRelativePath, string targetGamePath)
+    {
+        var extension = Path.GetExtension(baseRelativePath);
+        var withoutExtension = baseRelativePath[..^extension.Length];
+        return $"{withoutExtension}-standing-idle-{ShortHash(targetGamePath)}{extension}";
+    }
+
+    private static string CreateTemporaryPapPath(string outputPath)
+    {
+        var directory = Path.GetDirectoryName(outputPath)
+            ?? throw new InvalidOperationException("Dancy could not determine the generated PAP directory.");
+        var extension = Path.GetExtension(outputPath);
+        var name = Path.GetFileNameWithoutExtension(outputPath);
+        return Path.Combine(directory, $"{name}.{Guid.NewGuid():N}.tmp{extension}");
     }
 
     private static T OnFrameworkThread<T>(Func<T> work)

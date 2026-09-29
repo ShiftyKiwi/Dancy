@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(360, 390);
+        Size = new Vector2(420, 640);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -142,6 +142,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterStandingIdleCandidateTwoControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (validateStandingIdleCandidateTwo)
             plugin.AgentBridge.StartStandingIdleCandidateTwo();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var runStandingIdleProduction = ImGui.Button("Run c0701 Standing Idle production test");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterStandingIdleProductionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (runStandingIdleProduction)
+            plugin.AgentBridge.StartStandingIdleProduction();
 #endif
 
         if (ImGui.Button("Discord Server"))

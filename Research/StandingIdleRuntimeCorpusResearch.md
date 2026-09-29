@@ -263,3 +263,149 @@ written, no production target was enabled, and no production PAP writer was
 changed. The evidence improves semantic confidence in the observed existing
 PAPs, but does not establish an engine-level safe partial replacement or
 writer readiness.
+
+## Decisive c0701 Hybrid-Section Experiment
+
+On 2026-09-28, a Debug-only VFXEditor endpoint constructed two disposable
+target-shell variants under the Dancy temporary directory. The only source was
+the human-validated ogRayrei Male Miqo Relaxed Default Idle PAP. Both source
+PAPs were read-only inputs; the original ogRayrei mod, its options, and its
+metadata were never written.
+
+The target shell was the current vanilla c0701 `normal/idle` PAP. Its two
+headers were retained in their original order: A0 `cbna_add_dmg_f`, type 15,
+Havok 0/TMB 0; then A1 `cbnm_id0`, type 0, Havok 1/TMB 1. VFXEditor's
+initialized Havok writer replaced the complete source motion 1 and its binding
+inside a copied target shell. It did not edit tracks, keyframes, transforms, or
+either input asset.
+
+| Variant | A0 motion / TMB | A1 motion / TMB | SHA-256 | Structural result |
+| --- | --- | --- | --- | --- |
+| A1 | vanilla / vanilla | ogRayrei motion 1 / vanilla TMB 1 | `0B3C841409F178094F7050F9CAB21F80528E51C5BEF52570C463AA25FC557481` | PASS |
+| A2 | vanilla / vanilla | ogRayrei motion 1 / ogRayrei TMB 1 | `9F10A20ADB68E9BA23B658414B6082495FDA35E8A80DE9DFDF326633F3B211CD` | PASS |
+
+For both outputs, Dancy independently re-opened the PAP, verified exactly two
+headers and two TMB sections, verified the original header ordering and
+timeline hashes, and used VFXEditor's read-only motion fingerprints to prove
+that A0 remained vanilla while A1 exactly matched ogRayrei's source motion 1.
+The output's Havok binding count was also required to match the copied target
+shell before Penumbra could see a redirect.
+
+The player-scoped A1 run then passed its supported controls:
+
+- Control V resolved c0701 `normal/idle` to the copied vanilla target shell.
+- Control M restored the full ogRayrei source mapping and its original SHA-256.
+- Hybrid A1 resolved only Dalkand's individual collection to its temporary PAP.
+- Human observation found no visible T-pose, freeze, corruption, or broken
+  Change Pose transition through the available cycle for both A1 and A2.
+- The custom-versus-vanilla visual difference was not decisively
+  distinguishable for either motion-1 variant. This is clean playback evidence,
+  not proof that motion 1 alone drives the visible ordinary-idle appearance.
+- Dancy removed the temporary redirect, re-verified the individual collection,
+  original resolved source path, source bytes, source settings, and Changed
+  Items count, then deleted the temporary workspace. No generated PAP remains.
+
+The runtime result proves, for the tested c0701 Standing Idle topology only,
+that a complete source motion 1 can replace the target's motion 1 while the
+target-native motion 0, headers, and vanilla TMB 0/1 remain intact without
+visible corruption. A1 did not need source TMB 1 to remain clean, but neither
+motion-1 variant demonstrated a separately recognizable ordinary-idle look.
+
+## Rust Reverse Hybrid B1
+
+Because Rust's c0701 mapping changes both motions and both TMBs, the clean but
+visually non-distinct Rust A1/A2 results required the prompt's reverse test.
+Rust B1 used a vanilla c0701 target shell with complete Rust motion 0, vanilla
+TMB 0, and untouched vanilla motion 1/TMB 1. B2 was constructed and statically
+verified as the source-TMB-0 control, but was not activated because B1 already
+showed the expected Rust idle.
+
+| Variant | A0 motion / TMB | A1 motion / TMB | SHA-256 | Structural result |
+| --- | --- | --- | --- | --- |
+| Rust B1 | Rust motion 0 / vanilla TMB 0 | vanilla / vanilla | `20767E7A81074E741FCE8A4EF57EDCDD771C17FFE5E0ECE46D0AA24F40CECC68` | PASS |
+| Rust B2 | Rust motion 0 / Rust TMB 0 | vanilla / vanilla | `A45F976FE2B22178D38FA0DEB98BE0687AB6B5DF2C8DD7AED17E4B2F66380577` | PASS |
+
+Dancy statically re-opened both outputs and independently verified their two
+headers, two TMB sections, original ordering, complete Rust motion-0
+fingerprint, and preserved vanilla motion-1 fingerprint. B1 then resolved only
+Dalkand's individual collection to its temporary PAP. Human observation
+confirmed that the Rust idle appeared correctly across the pose cycle. Dancy
+removed the temporary redirect and restored the user's intentionally active
+Rust c0101 source path, source SHA-256
+`E44B90430F03B821AEBB84BB28BEF9212B75A3720F6922ACFB296697CECDF5F3`,
+settings, collection, and Changed Items count. No hybrid file remains.
+
+This is direct visual evidence that c0701's motion 0 is independently
+replaceable with a complete working Rust ordinary-idle motion while the target
+retains motion 1 and both vanilla timelines. Rust B1 did not require source
+TMB 0, so the tested safe structural unit is `MOTION ONLY` for Rust motion 0.
+The earlier ogRayrei A1/A2 runs provide separate clean runtime evidence for a
+motion-1 transplant, but do not establish that motion 1 is the visually active
+ordinary-idle state.
+
+Standing Idle is classified as `MultiSectionIndependent` with MEDIUM
+confidence, qualified as: "c0701 Rust motion-0 replacement is visually proven
+while preserving target section 1; ogRayrei motion-1 replacement is structurally
+and playback-clean but visually non-distinct." This is not a claim about
+arbitrary multi-section PAPs, other races, other sections, or source-to-target
+retargeting.
+
+Production remains blocked. A target-centric Standing Idle writer needs its own
+design, implementation, and acceptance milestone; the existing one-section
+preflight and disabled UI behavior remain authoritative.
+
+## Final Validation Snapshot
+
+The final post-B1 validation pass completed on 2026-09-29 without enabling a
+production Standing Idle target or retaining a hybrid output:
+
+| Check | Result |
+| --- | --- |
+| Rust B1 human visual observation | Rust appeared correctly through the idle-pose cycle |
+| Per-motion installed-mod corpus | 4/4 PASS; 136 canonical mappings across 2,235 mods |
+| Multi-section PAP research fixtures | 4/4 PASS |
+| Current target catalog | 7/7 PASS |
+| Dancy live core suite | 18/18 PASS |
+| Push-ups to Water regression | 19/19 PASS |
+
+The per-motion corpus verified the 69,050-file, 206,509,610,995-byte source
+inventory and 64 deterministic sample hashes were unchanged across its
+read-only pass. The B1 harness separately re-verified the restored Rust source
+path, SHA-256, collection settings, and Changed Items count after removing its
+temporary player-only redirect. Its temporary workspace was deleted.
+
+These results establish the constrained c0701 evidence described above. They
+do not authorize general multi-section writing, a Standing Idle product target,
+or source-to-target retargeting.
+
+## Production Support Finalization
+
+This historical conclusion was superseded after implementation and automated
+production validation of one target-centric writer. Dancy now supports only
+canonical `normal/idle` PAP variants that satisfy all of these fixed facts:
+
+- the game path is `bt_common/resident/idle.pap`;
+- there are exactly two headers and two timeline sections;
+- header 0 is `cbna_add_dmg_f`, type 15, Havok motion 0, non-face;
+- header 1 is `cbnm_id0`, type 0, Havok motion 1, non-face.
+
+The writer replaces complete source motion 0 only. It requires a one-section,
+Havok-motion-0 Loop source and preserves target motion 1 plus both target
+timeline sections. All other multi-section targets remain unsupported.
+
+Current game-data preflight inspected all 16 resolved Standing Idle variants:
+`c0101`, `c0201`, `c0401`, `c0501`, `c0601`, `c0701`, `c0801`, `c0901`,
+`c1001`, `c1101`, `c1301`, `c1401`, `c1501`, `c1601`, `c1701`, and `c1801`.
+Every current variant matched the fixed topology. A later divergent variant is
+excluded individually rather than being inferred compatible from section counts.
+
+The c0701 production regression generated a Dancy-owned PAP, reparsed it,
+verified source motion 0 and preserved target motion 1 fingerprints, preserved
+both target timeline hashes, and observed Penumbra resolve the local player's
+canonical `normal/idle` path to that exact generated file. Conduit then invoked
+`/changepose`; Dancy restored the prior mapping and removed its temporary output.
+
+For this already proven topology, that structural and runtime chain is the
+automation-first acceptance contract. Human visual confirmation is required for
+a new topology, a new replacement model, or an unexplained structural/runtime
+mismatch, not for every regression of this one.

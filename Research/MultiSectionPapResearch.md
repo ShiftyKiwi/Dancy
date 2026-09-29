@@ -128,3 +128,14 @@ The structural mapping is known, but role selection and cross-section independen
 ## Next Recommended Implementation Step
 
 Add one read-only, supported runtime-observation milestone that can establish whether the two Standing Idle sections are independently selected or simultaneously required; do not begin any writer work until that evidence exists.
+
+## Superseding Production Boundary
+
+The requested evidence and target-centric writer milestone subsequently passed
+for canonical Standing Idle only. `normal/idle` is now supported when each
+resolved race variant passes the exact two-header/two-timeline preflight defined
+in `PapCompatibilityPreflight`. The writer replaces source motion 0 and
+preserves target motion 1 plus both target-native timelines. This is not a
+general relaxation of the multi-section boundary: every other multi-section
+target, coupled or ambiguous topology, and arbitrary N-section PAP remains
+unsupported and fail-closed.

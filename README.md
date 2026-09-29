@@ -19,8 +19,8 @@ the original mod's options and files untouched.
    for a normal override by default. Paired options can be narrowed to one
    game path when only one side should change.
 3. Choose a target. The default `Looped Emotes` tab is for regular looping
-   emotes. `Poses & Idles` contains persistent character states such as chair
-   sit, ground sit, sleep/lying, and supported Change Pose families.
+   emotes. `Poses & Idles` contains persistent character states such as Standing
+   Idle, chair sit, ground sit, sleep/lying, and supported Change Pose families.
    `One-shot / Advanced` contains targets whose duration is controlled by the
    game and may end naturally.
 4. Review Dancy's mapping preview, source/target variants, and structural PAP
@@ -51,9 +51,10 @@ contain local file paths.
 
 ## Known Limitations
 
-- Standing Idle is recognized as `Persistent Pose - Standing Idle`, but is
-  disabled because its current PAP has two animation and two TMB sections.
-  Dancy's safe writer supports one-animation, one-TMB target PAPs only.
+- Standing Idle is supported only for canonical `normal/idle` variants that
+  pass Dancy's exact two-section preflight. Dancy replaces the primary idle
+  motion while preserving the target-native auxiliary motion and both timelines.
+  This does not enable arbitrary multi-section PAP editing.
 - Some `One-shot / Advanced` targets finish naturally because their duration is
   controlled by the game.
 - A semantic target classification never bypasses structural PAP preflight.
@@ -79,3 +80,11 @@ dotnet build Dancy/Dancy.csproj -c Debug -p:Platform=x64
 The local developer artifact is `Dancy/bin/x64/Debug/Dancy.dll`. Offline tests
 do not replace in-game validation against real Penumbra mods and client PAP
 data.
+
+For a topology already proven by a prior runtime validation, the production
+regression may be accepted automatically when Dancy reparses the generated PAP,
+verifies source and preserved-target fingerprints/timelines, Penumbra reports
+the canonical target resolving to the generated PAP, Conduit invokes the
+relevant state command, and cleanup restores the exact prior state. A human
+visual check remains appropriate for a new topology, a new replacement model,
+or an unexplained structural/runtime mismatch.
