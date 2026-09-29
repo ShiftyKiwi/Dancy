@@ -17,7 +17,9 @@ the original mod's options and files untouched.
 2. Choose a source option. Dancy separates normal loop PAPs from start,
    transition, end, and unknown paths so only valid loop sources are selected
    for a normal override by default. Paired options can be narrowed to one
-   game path when only one side should change.
+   game path when only one side should change. An option backed by a shared
+   animation bank is supported only when its companion timeline identifies one
+   source motion unambiguously; ambiguous banks remain unavailable.
 3. Choose a target. The default `Looped Emotes` tab is for regular looping
    emotes. `Poses & Idles` contains persistent character states such as Standing
    Idle, chair sit, ground sit, sleep/lying, and supported Change Pose families.
