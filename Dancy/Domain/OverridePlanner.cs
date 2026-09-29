@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using Dancy.Core.Models;
 
 namespace Dancy.Domain;
 
@@ -19,6 +20,7 @@ public sealed class OverridePlanRequest
     public string TargetName { get; init; } = string.Empty;
     public string TargetCommand { get; init; } = string.Empty;
     public IReadOnlyList<OverridePlanSource> Sources { get; init; } = Array.Empty<OverridePlanSource>();
+    public IReadOnlyList<CompanionTimelineOverride> CompanionTimelines { get; init; } = Array.Empty<CompanionTimelineOverride>();
     public IReadOnlyList<string> TargetGamePaths { get; init; } = Array.Empty<string>();
 }
 
@@ -27,7 +29,9 @@ public sealed class PlannedPapCopy
     public string SourcePapPath { get; init; } = string.Empty;
     public string OutputRelativePath { get; init; } = string.Empty;
     public IReadOnlyList<string> SourceGamePaths { get; init; } = Array.Empty<string>();
+    public int SourceOptionPhysicalPapCount { get; init; }
     public IReadOnlyList<string> TargetGamePaths { get; init; } = Array.Empty<string>();
+    public IReadOnlyList<CompanionTimelineOverride> CompanionTimelines { get; init; } = Array.Empty<CompanionTimelineOverride>();
     public IReadOnlyList<TargetMatchResult> MatchResults { get; init; } = Array.Empty<TargetMatchResult>();
 }
 
@@ -71,6 +75,10 @@ public static class OverridePlanner
         var sourceMatches = sources
             .Select(source => new SourceMatch(source, TargetPathMatcher.Match(source.GamePath, request.TargetGamePaths)))
             .ToList();
+        var sourceOptionPhysicalPapCount = sources
+            .Select(source => GamePathIdentity.Normalize(source.SourcePapPath))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
         var explicitlyClaimedTargets = sourceMatches
             .Where(match => match.Result.Strategy is TargetMatchStrategy.ExactDirectory
                 or TargetMatchStrategy.SameRigAndLayer
@@ -113,7 +121,9 @@ public static class OverridePlanner
                 SourcePapPath = group[0].Source.SourcePapPath,
                 OutputRelativePath = outputRelativePath,
                 SourceGamePaths = group.Select(match => match.Source.GamePath).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                SourceOptionPhysicalPapCount = sourceOptionPhysicalPapCount,
                 TargetGamePaths = targetPaths,
+                CompanionTimelines = request.CompanionTimelines,
                 MatchResults = matchResults,
             });
         }
@@ -171,7 +181,11 @@ public static class OverridePlanner
         }.Select(GamePathIdentity.Normalize).Concat(sources
             .OrderBy(source => source.GamePath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(source => source.SourcePapPath, StringComparer.OrdinalIgnoreCase)
-            .Select(source => $"{GamePathIdentity.Normalize(source.GamePath)}|{GamePathIdentity.Normalize(source.SourcePapPath)}")));
+            .Select(source => $"{GamePathIdentity.Normalize(source.GamePath)}|{GamePathIdentity.Normalize(source.SourcePapPath)}"))
+            .Concat(request.CompanionTimelines
+                .OrderBy(timeline => timeline.GamePath, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(timeline => timeline.ModdedTimelinePath, StringComparer.OrdinalIgnoreCase)
+                .Select(timeline => $"{GamePathIdentity.Normalize(timeline.GamePath)}|{GamePathIdentity.Normalize(timeline.ModdedTimelinePath)}")));
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(canonical));
         return new Guid(hash[..16]).ToString("D");

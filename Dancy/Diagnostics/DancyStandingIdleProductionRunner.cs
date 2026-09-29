@@ -170,8 +170,7 @@ internal sealed class DancyStandingIdleProductionRunner
         if (!PathSafety.TryResolveInsideRoot(modFolder, source.ModdedPapPath, out var sourcePath) || !File.Exists(sourcePath))
             throw new InvalidOperationException($"The selected source PAP is unsafe or missing: {source.ModdedPapPath}");
 
-        var player = OnFramework(() => Plugin.ObjectTable.LocalPlayer ?? throw new InvalidOperationException("The local player is unavailable."));
-        var playerIndex = player.ObjectIndex;
+        var playerIndex = OnFramework(() => (Plugin.ObjectTable.LocalPlayer ?? throw new InvalidOperationException("The local player is unavailable.")).ObjectIndex);
         var collection = OnFramework(() => new GetCollectionForObject(Plugin.PluginInterface).Invoke(playerIndex));
         if (!collection.Item1 || collection.Item3.Item1 == Guid.Empty)
             throw new InvalidOperationException("Penumbra did not report an effective local-player collection.");
@@ -216,7 +215,7 @@ internal sealed class DancyStandingIdleProductionRunner
             playerIndex,
             collection.Item3.Item1,
             persistentSettings,
-            new ResolvePlayerPath(Plugin.PluginInterface).Invoke(TargetGamePath),
+            OnFramework(() => new ResolvePlayerPath(Plugin.PluginInterface).Invoke(TargetGamePath)),
             targetPath,
             skeletonPath,
             CaptureIntegrity(targetPath));

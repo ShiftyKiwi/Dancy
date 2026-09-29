@@ -24,6 +24,9 @@ namespace Dancy.Windows
 {
     public class MainWindow : Window, IDisposable
     {
+        private static readonly Vector4 ErrorTextColor = new(1f, 0.35f, 0.35f, 1f);
+        private static readonly Vector4 CautionTextColor = new(1f, 0.82f, 0.45f, 1f);
+
         private enum WizardStep
         {
             SelectMod = 0,
@@ -60,6 +63,7 @@ namespace Dancy.Windows
         private LuminaEmote? selectedReplacementEmote = null;
         private OverridePlan? previewPlan;
         private PapCompatibilityResult? previewCompatibility;
+        private readonly Dictionary<string, SourceSelectionPreview> previewSourceSelections = new(StringComparer.OrdinalIgnoreCase);
         private bool isCreatingOverride;
         private string? lastDiagnostics;
         private readonly OverrideService overrideService = new();
@@ -72,6 +76,18 @@ namespace Dancy.Windows
             int TotalVariantCount = 0,
             IReadOnlyList<string>? SupportedGamePaths = null,
             bool UsesStandingIdleWriter = false);
+
+        private sealed record ExistingOverrideSummary(
+            string Source,
+            string Option,
+            string Target,
+            string Type,
+            string Context,
+            bool IsLegacy);
+
+        private sealed record SourceSelectionPreview(
+            int AnimationCount,
+            SourceAnimationSelection Selection);
 
         // Step navigation
         private WizardStep currentStep = WizardStep.SelectMod;
@@ -195,12 +211,13 @@ namespace Dancy.Windows
         {
             var totalHeight = ImGui.GetContentRegionAvail().Y;
 
-            float headerHeight = totalHeight * 0.15f;
-            float contentHeight = totalHeight * 0.70f;
-            float footerHeight = totalHeight * 0.15f;
+            // Fixed utility bands avoid wasting vertical space when the wizard is enlarged.
+            const float headerHeight = 98f;
+            const float footerHeight = 84f;
+            var contentHeight = Math.Max(0f, totalHeight - headerHeight - footerHeight);
 
             // =========================
-            // HEADER (15%)
+            // HEADER
             // =========================
             using (ImRaii.Child("DancyHeader", new Vector2(-1, headerHeight), false))
             {
@@ -210,7 +227,7 @@ namespace Dancy.Windows
             }
 
             // =========================
-            // MAIN CONTENT (70%)
+            // MAIN CONTENT
             // =========================
             using (ImRaii.Child("DancyContent", new Vector2(-1, contentHeight), true))
             {
@@ -231,7 +248,7 @@ namespace Dancy.Windows
             }
 
             // =========================
-            // FOOTER (15%)
+            // FOOTER
             // =========================
             using (ImRaii.Child("DancyFooter", new Vector2(-1, footerHeight), false))
             {
@@ -247,11 +264,7 @@ namespace Dancy.Windows
                 ImGui.SetClipboardText(lastDiagnostics);
 
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1.0f, 0.65f, 0.0f, 1.0f));
-            ImGui.TextWrapped(
-                "Dancy is currently in Early Access. "
-              + "Some mods or emotes may not fully work yet. "
-              + "Please join the Discord if you encounter issues or have suggestions."
-            );
+            ImGui.TextWrapped("Early Access: report an issue or share feedback through the Dancy Discord.");
             ImGui.PopStyleColor();
 
             ImGui.Spacing();
@@ -294,22 +307,15 @@ namespace Dancy.Windows
 
             ImGui.SameLine();
 
-            // Discord "badge"
-            ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.6f, 0.8f, 1f, 1f));
-            ImGui.Text("[Discord]");
-            ImGui.PopStyleColor();
-
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Open Dancy support / feedback Discord");
-            if (ImGui.IsItemClicked())
-            {
+            if (ImGui.Button("Discord"))
                 Util.OpenLink("https://discord.gg/asDM4dh4gz");
-            }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Open Dancy support and feedback Discord");
 
             ImGui.Spacing();
 
             ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.8f, 0.8f, 0.8f, 1f));
-            ImGui.TextWrapped("Dancy creates its own override group and PAP copies inside each mod. Original options and files stay untouched.");
+            ImGui.TextWrapped("Dancy creates a Dancy-owned override option. Original mod files stay untouched.");
             ImGui.PopStyleColor();
 
             if (!string.IsNullOrEmpty(lastScanError))
@@ -337,9 +343,9 @@ namespace Dancy.Windows
 
             DrawStepButton("1. Mod", WizardStep.SelectMod, true, hasMod);
             ImGui.SameLine();
-            DrawStepButton("2. Source option", WizardStep.SelectSource, hasSource, hasSelectedSource);
+            DrawStepButton("2. Source", WizardStep.SelectSource, hasSource, hasSelectedSource);
             ImGui.SameLine();
-            DrawStepButton("3. Target emote", WizardStep.SelectTarget, hasSelectedSource, hasTarget);
+            DrawStepButton("3. Target", WizardStep.SelectTarget, hasSelectedSource, hasTarget);
 
             ImGui.PopStyleVar(2);
         }
@@ -372,7 +378,7 @@ namespace Dancy.Windows
         // ======================================
         private void BeginCard(string id, string title, string subtitle = "")
         {
-            ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 10f);
+            ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 8f);
             ImGui.PushStyleVar(ImGuiStyleVar.ChildBorderSize, 1f);
             ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.07f, 0.07f, 0.11f, 1f));
 
@@ -482,7 +488,9 @@ namespace Dancy.Windows
                 return;
             }
 
-            ImGui.Text($"Selected: {selectedModName} ({selectedModDirectory})");
+            ImGui.Text($"Selected: {selectedModName}");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(selectedModDirectory);
 
             if (ImGui.Button(isScanningMod ? "Scanning..." : "Scan mod for emote overrides"))
             {
@@ -497,33 +505,81 @@ namespace Dancy.Windows
 
             if (PathSafety.TryResolveInsideRoot(penRoot, selectedModDirectory, out var selectedModPath)
                 && DancyFileManager.DancyExists(selectedModPath))
-            {
-                ImGui.Spacing();
-                ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Existing Dancy overrides");
-                var existingOverrides = DancyFileManager.GetDancyOverrides(selectedModPath);
-                foreach (var existing in existingOverrides)
-                {
-                    ImGui.PushID(existing.Id);
-                    ImGui.TextWrapped($"{existing.Name} ({existing.Mappings.Count} target path{(existing.Mappings.Count == 1 ? string.Empty : "s")})");
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("Remove"))
-                        RemoveDancyOverride(selectedModPath, existing.Id);
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip(existing.Description);
-                    ImGui.PopID();
-                }
-
-                ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.80f, 0.10f, 0.15f, 1.0f));
-                ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.90f, 0.20f, 0.20f, 1.0f));
-                ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.70f, 0.05f, 0.10f, 1.0f));
-
-                if (ImGui.Button("Remove all Dancy overrides"))
-                    RemoveAllDancyOverrides(selectedModPath);
-
-                ImGui.PopStyleColor(3); // Button, ButtonHovered, ButtonActive
-            }
+                DrawExistingDancyOverrides(selectedModPath);
 
             EndCard();
+        }
+
+        private void DrawExistingDancyOverrides(string modPath)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Existing Dancy overrides");
+            ImGui.TextDisabled("Recreate the same source and target to update an existing Dancy override.");
+
+            var existingOverrides = DancyFileManager.GetDancyOverrides(modPath);
+            if (existingOverrides.Count == 0)
+            {
+                ImGui.TextDisabled("Dancy-owned metadata or files were found, but no current override summary is available.");
+            }
+            else
+            {
+                var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
+                if (ImGui.BeginTable("DancyExistingOverrideTable", 4, flags))
+                {
+                    ImGui.TableSetupColumn("Source");
+                    ImGui.TableSetupColumn("Target");
+                    ImGui.TableSetupColumn("Affected", ImGuiTableColumnFlags.WidthFixed, 74f);
+                    ImGui.TableSetupColumn("Actions", ImGuiTableColumnFlags.WidthFixed, 66f);
+                    ImGui.TableHeadersRow();
+
+                    foreach (var existing in existingOverrides)
+                    {
+                        var summary = DescribeExistingOverride(existing);
+                        ImGui.PushID(existing.Id);
+                        ImGui.TableNextRow();
+
+                        ImGui.TableNextColumn();
+                        ImGui.TextUnformatted(summary.Source);
+                        if (!string.IsNullOrWhiteSpace(summary.Option))
+                            ImGui.TextDisabled(summary.Option);
+
+                        ImGui.TableNextColumn();
+                        ImGui.TextUnformatted(summary.Target);
+                        ImGui.TextDisabled(summary.IsLegacy
+                            ? "Legacy Dancy override"
+                            : $"{summary.Type} · {summary.Context}");
+
+                        ImGui.TableNextColumn();
+                        ImGui.TextUnformatted($"{existing.Mappings.Count} path{(existing.Mappings.Count == 1 ? string.Empty : "s")}");
+
+                        ImGui.TableNextColumn();
+                        using (ImRaii.PushFont(UiBuilder.IconFont))
+                        {
+                            if (ImGui.SmallButton(FontAwesomeIcon.Copy.ToIconString()))
+                                CopyExistingOverrideDetails(existing, summary);
+                            if (ImGui.IsItemHovered())
+                                ImGui.SetTooltip("Copy Dancy override details");
+
+                            ImGui.SameLine();
+                            if (ImGui.SmallButton(FontAwesomeIcon.Trash.ToIconString()))
+                                RemoveDancyOverride(modPath, existing.Id);
+                            if (ImGui.IsItemHovered())
+                                ImGui.SetTooltip("Remove this Dancy override");
+                        }
+
+                        ImGui.PopID();
+                    }
+
+                    ImGui.EndTable();
+                }
+            }
+
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(0.80f, 0.10f, 0.15f, 1.0f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.90f, 0.20f, 0.20f, 1.0f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.70f, 0.05f, 0.10f, 1.0f));
+            if (ImGui.Button("Remove all Dancy overrides"))
+                RemoveAllDancyOverrides(modPath);
+            ImGui.PopStyleColor(3);
         }
 
         // ======================================
@@ -561,19 +617,18 @@ namespace Dancy.Windows
 
             if (filtered.Count == 0)
             {
-                ImGui.Text("No safe options found with single PAP source.");
+                ImGui.Text("No safe source options found.");
                 EndCard();
                 return;
             }
 
             var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
 
-            if (ImGui.BeginTable("DancyOverrideTable", 4, flags))
+            if (ImGui.BeginTable("DancyOverrideTable", 3, flags))
             {
-                ImGui.TableSetupColumn("Group");
-                ImGui.TableSetupColumn("Option");
+                ImGui.TableSetupColumn("Source option");
                 ImGui.TableSetupColumn("Animation");
-                ImGui.TableSetupColumn("Loop paths");
+                ImGui.TableSetupColumn("Loops", ImGuiTableColumnFlags.WidthFixed, 52f);
                 ImGui.TableHeadersRow();
 
                 foreach (var opt in filtered)
@@ -586,7 +641,7 @@ namespace Dancy.Windows
                     ImGui.TableNextRow();
                     ImGui.TableNextColumn();
 
-                    var label = $"{opt.GroupName}##{opt.GroupName}_{opt.OptionName}";
+                    var label = $"{opt.OptionName}##{opt.GroupName}_{opt.OptionName}";
 
                     if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns))
                     {
@@ -597,8 +652,7 @@ namespace Dancy.Windows
                         previewCompatibility = null;
                     }
 
-                    ImGui.TableNextColumn();
-                    ImGui.TextWrapped(opt.OptionName);
+                    ImGui.TextDisabled(opt.GroupName);
 
                     ImGui.TableNextColumn();
                     ImGui.TextWrapped(animationsDisplay);
@@ -624,16 +678,9 @@ namespace Dancy.Windows
             var selected = selectedOption;
             EnsureSelectedSourceGamePaths(selected);
 
-            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Selected option");
-            ImGui.Text($"Group: {selected.GroupName}");
-            ImGui.Text($"Option: {selected.OptionName}");
-            var animationSummary = selected.LogicalAnimations
-                .Select(animation => string.IsNullOrWhiteSpace(animation.Command) ? animation.Name : $"{animation.Name} ({animation.Command})")
-                .ToList();
-            ImGui.TextWrapped($"Animation: {string.Join(", ", animationSummary)}");
-            ImGui.Text($"Paths: {selected.Entries.Count}");
-            ImGui.Text($"Physical PAPs: {selected.Entries.Select(entry => entry.ModdedPapPath).Distinct(StringComparer.OrdinalIgnoreCase).Count()}");
-            ImGui.Text($"Phases: {string.Join(" + ", selected.Entries.Select(entry => entry.AppliesTo.Phase).Distinct().OrderBy(SourceSelectionPolicy.PhaseOrder))}");
+            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Selected source");
+            ImGui.TextWrapped($"{selected.OptionName} · {selected.GroupName}");
+            ImGui.TextWrapped($"Animation: {DescribeSourceAnimation(selected)}");
 
             ImGui.Spacing();
             var loops = SourceSelectionPolicy.OrderForDisplay(selected.LoopEntries);
@@ -641,38 +688,55 @@ namespace Dancy.Windows
             var ends = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.End));
             var unknown = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Unknown));
             var selectedLoopCount = GetSelectedSourceEntries(selected).Count;
-            ImGui.Text($"{selectedLoopCount} / {loops.Count} Loop paths selected");
+            ImGui.Text($"{selectedLoopCount} / {loops.Count} Loop sources selected");
             if (starts.Count > 0)
-                ImGui.TextDisabled($"{starts.Count} transition path{(starts.Count == 1 ? string.Empty : "s")} ignored");
+                ImGui.TextDisabled($"{starts.Count} start / transition path{(starts.Count == 1 ? string.Empty : "s")} shown for context");
+            if (ends.Count > 0 || unknown.Count > 0)
+                ImGui.TextDisabled($"{ends.Count + unknown.Count} end or unclassified path{(ends.Count + unknown.Count == 1 ? string.Empty : "s")} shown for context");
 
-            if (ImGui.Button("Select all loops"))
+            if (loops.Count == 0)
             {
-                selectedSourceGamePaths.Clear();
-                foreach (var entry in loops)
-                    selectedSourceGamePaths.Add(entry.GamePath);
-                previewPlan = null;
-                previewCompatibility = null;
+                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.68f, 0.38f, 1f));
+                ImGui.TextWrapped("This option has no Loop sources. Its remaining files are available for context, but cannot create a normal Dancy loop override.");
+                ImGui.PopStyleColor();
             }
-            ImGui.SameLine();
-            if (ImGui.Button("Clear loop selection"))
+            else
             {
-                foreach (var entry in loops)
-                    selectedSourceGamePaths.Remove(entry.GamePath);
-                previewPlan = null;
-                previewCompatibility = null;
+                if (ImGui.Button("Select all loops"))
+                {
+                    selectedSourceGamePaths.Clear();
+                    foreach (var entry in loops)
+                        selectedSourceGamePaths.Add(entry.GamePath);
+                    previewPlan = null;
+                    previewCompatibility = null;
+                }
+                ImGui.SameLine();
+                if (ImGui.Button("Clear loop selection"))
+                {
+                    foreach (var entry in loops)
+                        selectedSourceGamePaths.Remove(entry.GamePath);
+                    previewPlan = null;
+                    previewCompatibility = null;
+                }
             }
 
-            DrawSourcePathSection("Loop paths", loops, selectable: true, defaultOpen: true);
-            DrawSourcePathSection("Start / transition paths", starts, selectable: false, defaultOpen: false);
-            DrawSourcePathSection("End / other paths", ends, selectable: false, defaultOpen: false);
-            DrawSourcePathSection("Unknown paths", unknown, selectable: false, defaultOpen: false);
+            DrawSourcePathSection("Loop sources", loops, selectable: true, defaultOpen: true);
+            DrawSourcePathSection("Start / transition", starts, selectable: false, defaultOpen: false);
+            DrawSourcePathSection("End / other", ends, selectable: false, defaultOpen: false);
+            DrawSourcePathSection("Unknown", unknown, selectable: false, defaultOpen: false);
             var selectedSourceEntries = GetSelectedSourceEntries(selected);
             ImGui.Spacing();
 
-            if (selectedSourceEntries.Count == 0)
+            if (loops.Count == 0)
             {
-                ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.55f, 0.45f, 1f));
-                ImGui.Text("Select at least one source path to continue.");
+                ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                ImGui.Text("Choose a source option with Loop sources to continue.");
+                ImGui.PopStyleColor();
+            }
+            else if (selectedSourceEntries.Count == 0)
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                ImGui.Text("Select at least one Loop source to continue.");
                 ImGui.PopStyleColor();
             }
             else if (ImGui.Button($"Continue with {selectedSourceEntries.Count} Loop path{(selectedSourceEntries.Count == 1 ? string.Empty : "s")}"))
@@ -696,13 +760,12 @@ namespace Dancy.Windows
                 return;
 
             var tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
-            if (ImGui.BeginTable($"DancySourcePaths_{label}", 5, tableFlags))
+            if (ImGui.BeginTable($"DancySourcePaths_{label}", 4, tableFlags))
             {
                 ImGui.TableSetupColumn("Use", ImGuiTableColumnFlags.WidthFixed, selectable ? 106f : 72f);
-                ImGui.TableSetupColumn("Applies to");
-                ImGui.TableSetupColumn("PAP origin");
-                ImGui.TableSetupColumn("Phase", ImGuiTableColumnFlags.WidthFixed, 86f);
-                ImGui.TableSetupColumn("Details");
+                ImGui.TableSetupColumn("Target variant");
+                ImGui.TableSetupColumn("Source file");
+                ImGui.TableSetupColumn("Copy", ImGuiTableColumnFlags.WidthFixed, 48f);
                 ImGui.TableHeadersRow();
 
                 foreach (var (entry, index) in entries.Select((entry, index) => (entry, index)))
@@ -733,21 +796,25 @@ namespace Dancy.Windows
                     }
                     else
                     {
-                        ImGui.TextDisabled("Ignored");
+                        ImGui.TextDisabled("Context only");
                     }
 
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(entry.AppliesTo.Character.DisplayName);
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(entry.PapOrigin.IsKnown ? entry.PapOrigin.DisplayName : "Mod-relative PAP");
+                    ImGui.TextUnformatted(Path.GetFileName(entry.ModdedPapPath));
+                    ImGui.TextDisabled(entry.PapOrigin.IsKnown ? entry.PapOrigin.DisplayName : "Mod-relative file");
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(entry.AppliesTo.Phase.ToString());
-                    ImGui.TableNextColumn();
-                    var detail = $"{Path.GetFileName(entry.GamePath)} -> {Path.GetFileName(entry.ModdedPapPath)}";
-                    if (ImGui.Selectable($"{detail}##CopyPaths", false))
-                        ImGui.SetClipboardText($"Game path: {entry.GamePath}\nModded PAP path: {entry.ModdedPapPath}");
+                    using (ImRaii.PushFont(UiBuilder.IconFont))
+                    {
+                        if (ImGui.SmallButton(FontAwesomeIcon.Copy.ToIconString()))
+                            ImGui.SetClipboardText($"Game path: {entry.GamePath}\nModded PAP path: {entry.ModdedPapPath}");
+                    }
                     if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip($"Game path:\n{entry.GamePath}\n\nModded PAP path:\n{entry.ModdedPapPath}\n\nClick to copy both paths.");
+                    {
+                        ImGui.SetTooltip(
+                            $"Phase: {entry.AppliesTo.Phase}\n\nGame path:\n{entry.GamePath}\n\nModded PAP path:\n{entry.ModdedPapPath}\n\nCopy both paths.");
+                    }
                     ImGui.PopID();
                 }
 
@@ -792,13 +859,19 @@ namespace Dancy.Windows
             EnsureSelectedSourceGamePaths(opt);
             var selectedSourceEntries = GetSelectedSourceEntries(opt);
 
-            ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
-            ImGui.Text($"Selected Loop paths: {selectedSourceEntries.Count} / {opt.LoopEntries.Count}");
+            ImGui.Text($"Source: {DescribeSourceAnimation(opt)} · {selectedSourceEntries.Count} Loop source{(selectedSourceEntries.Count == 1 ? string.Empty : "s")} selected");
             ImGui.Spacing();
 
             ImGui.PushItemWidth(320f);
-            ImGui.InputText("Search targets", ref emoteSearch, 100);
+            ImGui.InputText("Find target", ref emoteSearch, 100);
             ImGui.PopItemWidth();
+            if (!string.IsNullOrWhiteSpace(emoteSearch))
+            {
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Clear"))
+                    emoteSearch = string.Empty;
+                ImGui.TextDisabled($"Searching all target types for \"{emoteSearch}\".");
+            }
 
             if (ImGui.BeginTabBar("DancyTargetTypes"))
             {
@@ -839,7 +912,9 @@ namespace Dancy.Windows
 
             if (results.Count == 0)
             {
-                ImGui.Text(isSearchingTargets ? "No matching targets." : "No matching targets in this category.");
+                ImGui.TextWrapped(isSearchingTargets
+                    ? "No compatible targets match this search. Clear the search or try a different name."
+                    : "No compatible targets are available in this category.");
                 EndCard();
                 return;
             }
@@ -851,9 +926,9 @@ namespace Dancy.Windows
             if (ImGui.BeginTable("DancyTargetTable", 4, flags))
             {
                 ImGui.TableSetupColumn("Target");
-                ImGui.TableSetupColumn("Trigger / context");
+                ImGui.TableSetupColumn("Type");
                 ImGui.TableSetupColumn("Variants", ImGuiTableColumnFlags.WidthFixed, 72f);
-                ImGui.TableSetupColumn("Compatibility", ImGuiTableColumnFlags.WidthFixed, 130f);
+                ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, 132f);
                 ImGui.TableHeadersRow();
 
                 foreach (var emote in results)
@@ -884,22 +959,22 @@ namespace Dancy.Windows
                     if (!targetStatus.IsSupported)
                         ImGui.EndDisabled();
 
-                    ImGui.TextDisabled($"{TargetSemantics.DisplayName(emote.Behavior)} · {TargetSemantics.DisplayName(emote.Context)}");
+                    if (!string.IsNullOrWhiteSpace(emote.Command))
+                        ImGui.TextDisabled(emote.Command);
 
                     ImGui.TableNextColumn();
-                    var trigger = string.IsNullOrWhiteSpace(emote.Trigger) ? emote.Command : emote.Trigger;
-                    ImGui.TextUnformatted(string.IsNullOrWhiteSpace(trigger)
-                        ? TargetSemantics.DisplayName(emote.Context)
-                        : trigger);
+                    ImGui.TextUnformatted(TargetSemantics.DisplayName(emote.Behavior));
+                    ImGui.TextDisabled(TargetSemantics.DisplayName(emote.Context));
                     ImGui.TableNextColumn();
-                    ImGui.TextUnformatted(targetStatus.UsesStandingIdleWriter
-                        ? $"{targetStatus.SupportedVariantCount} / {targetStatus.TotalVariantCount}"
-                        : GetTargetPaths(emote).Count.ToString());
+                    ImGui.TextUnformatted(DescribeVariantCount(targetStatus, GetTargetPaths(emote).Count));
                     ImGui.TableNextColumn();
+                    var hasPartialVariantSupport = HasPartialVariantSupport(targetStatus);
                     if (!targetStatus.IsSupported)
-                        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.62f, 0.45f, 1f));
+                        ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                    else if (hasPartialVariantSupport)
+                        ImGui.PushStyleColor(ImGuiCol.Text, CautionTextColor);
                     ImGui.TextWrapped(targetStatus.Summary);
-                    if (!targetStatus.IsSupported)
+                    if (!targetStatus.IsSupported || hasPartialVariantSupport)
                     {
                         ImGui.PopStyleColor();
                         if (ImGui.IsItemHovered())
@@ -918,45 +993,56 @@ namespace Dancy.Windows
                 previewCompatibility ??= InspectCompatibility(previewPlan);
 
                 var behaviorNotice = TargetSemantics.BehaviorNotice(selectedReplacementEmote.Behavior);
-                if (!string.IsNullOrWhiteSpace(behaviorNotice))
+                if (behaviorNotice is not null)
                 {
-                    var warning = selectedReplacementEmote.Behavior is TargetBehavior.OneShot or TargetBehavior.Unknown;
-                    ImGui.PushStyleColor(ImGuiCol.Text, warning
-                        ? new Vector4(1f, 0.78f, 0.45f, 1f)
-                        : new Vector4(0.7f, 0.86f, 0.8f, 1f));
-                    ImGui.TextWrapped(behaviorNotice);
-                    ImGui.PopStyleColor();
+                    DrawBehaviorNotice(behaviorNotice);
                     ImGui.Spacing();
                 }
 
                 ImGui.Spacing();
 
-                ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Summary");
-                ImGui.Text($"Source: ({opt.GroupName}) {opt.OptionName}");
-                ImGui.Text($"Source Loop paths: {selectedSourceEntries.Count} selected");
-                ImGui.Text($"Target: {selectedReplacementEmote.Name}");
-                ImGui.Text($"Type: {TargetSemantics.DisplayName(selectedReplacementEmote.Behavior)}");
-                ImGui.Text($"Context: {TargetSemantics.DisplayName(selectedReplacementEmote.Context)}");
-                var selectedTrigger = string.IsNullOrWhiteSpace(selectedReplacementEmote.Trigger)
-                    ? selectedReplacementEmote.Command
-                    : selectedReplacementEmote.Trigger;
-                ImGui.TextWrapped($"Trigger: {(string.IsNullOrWhiteSpace(selectedTrigger) ? "State-managed" : selectedTrigger)}");
+                ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Selected target");
                 var targetStatus = GetTargetPapStatus(selectedReplacementEmote);
                 var targetPaths = GetTargetPaths(selectedReplacementEmote);
-                ImGui.Text(targetStatus.UsesStandingIdleWriter
-                    ? $"Variants: {targetStatus.SupportedVariantCount} supported / {targetStatus.TotalVariantCount} current"
-                    : $"Variants: {targetPaths.Count}");
-                var compatibilityColor = previewCompatibility.Status == PapCompatibilityStatus.Unsupported
-                    ? new Vector4(1f, 0.5f, 0.45f, 1f)
-                    : previewCompatibility.Status == PapCompatibilityStatus.CompatibleWithWarning
-                        ? new Vector4(1f, 0.85f, 0.5f, 1f)
-                        : new Vector4(0.65f, 0.9f, 0.7f, 1f);
-                ImGui.TextColored(compatibilityColor, $"Compatibility: {previewCompatibility.Status}");
-                ImGui.TextWrapped(previewCompatibility.Reason);
+                if (BeginKeyValueTable("DancyTargetSummary"))
+                {
+                    DrawSummaryRow("Target", selectedReplacementEmote.Name);
+                    DrawSummaryRow("Type", TargetSemantics.DisplayName(selectedReplacementEmote.Behavior));
+                    DrawSummaryRow("Context", TargetSemantics.DisplayName(selectedReplacementEmote.Context));
+                    DrawSummaryRow("Variants", DescribeVariantCount(targetStatus, targetPaths.Count));
+                    DrawSummaryRow("Compatibility", DescribeCompatibility(previewCompatibility));
+                    if (targetStatus.UsesStandingIdleWriter)
+                        DrawSummaryRow("Strategy", "Preserve target idle structure");
+                    ImGui.EndTable();
+                }
+
+                if (previewCompatibility.Status is PapCompatibilityStatus.Unsupported or PapCompatibilityStatus.Unknown)
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                    ImGui.TextWrapped(DescribeBlockedCombination(previewCompatibility));
+                    ImGui.PopStyleColor();
+                }
+                else if (previewCompatibility.Status == PapCompatibilityStatus.CompatibleWithWarning)
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Text, CautionTextColor);
+                    ImGui.TextWrapped("Dancy can create this override, but the selected source and target use different variants.");
+                    ImGui.PopStyleColor();
+                }
+                else if (HasPartialVariantSupport(targetStatus))
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Text, CautionTextColor);
+                    ImGui.TextWrapped("Only some target variants are supported. Dancy will leave the remaining variants untouched.");
+                    ImGui.PopStyleColor();
+                }
 
                 if (ImGui.TreeNode("Details"))
                 {
+                    var selectedTrigger = string.IsNullOrWhiteSpace(selectedReplacementEmote.Trigger)
+                        ? selectedReplacementEmote.Command
+                        : selectedReplacementEmote.Trigger;
+                    ImGui.TextWrapped($"Trigger: {(string.IsNullOrWhiteSpace(selectedTrigger) ? "State-managed" : selectedTrigger)}");
                     ImGui.TextWrapped($"Timeline: {selectedReplacementEmote.PrimaryTimelineKey}");
+                    ImGui.TextWrapped($"Compatibility details: {previewCompatibility.Reason}");
                     if (!string.IsNullOrWhiteSpace(selectedReplacementEmote.ClassificationEvidence))
                         ImGui.TextWrapped($"Classification evidence: {selectedReplacementEmote.ClassificationEvidence}");
                     if (targetStatus.UsesStandingIdleWriter)
@@ -973,19 +1059,19 @@ namespace Dancy.Windows
                     ImGui.TreePop();
                 }
 
-                DrawMappingPreview(previewPlan, selectedReplacementEmote, previewCompatibility);
+                DrawMappingPreview(previewPlan, opt, selectedSourceEntries, selectedReplacementEmote, previewCompatibility);
 
                 ImGui.Spacing();
 
                 if (selectedSourceEntries.Count == 0)
                 {
-                    ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.55f, 0.45f, 1f));
-                    ImGui.Text("Select at least one source path in Step 2.");
+                    ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                    ImGui.Text("Select at least one Loop source in Step 2.");
                     ImGui.PopStyleColor();
                 }
                 else if (!previewPlan.IsValid || !previewCompatibility.CanCreate)
                 {
-                    ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(1f, 0.55f, 0.45f, 1f));
+                    ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
                     ImGui.TextWrapped(!previewPlan.IsValid ? string.Join("\n", previewPlan.Errors) : previewCompatibility.Reason);
                     ImGui.PopStyleColor();
                 }
@@ -1056,6 +1142,7 @@ namespace Dancy.Windows
                 Sources = sourceEntries
                     .Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath))
                     .ToList(),
+                CompanionTimelines = source.CompanionTimelines,
                 TargetGamePaths = targetPaths,
             });
         }
@@ -1092,8 +1179,8 @@ namespace Dancy.Windows
             if (paths.Count == 0)
                 return targetPapStatusById[targetId] = new TargetPapStatus(
                     false,
-                    "Unavailable: no PAPs",
-                    $"Dancy recognizes {target.Name}, but could not resolve current target PAP variants. Refresh Data or choose another target.");
+                    "Unavailable",
+                    $"Dancy recognizes {target.Name}, but could not find a usable current-game target. Refresh Data, then choose another target if it remains unavailable.");
 
             try
             {
@@ -1104,11 +1191,15 @@ namespace Dancy.Windows
                 {
                     var variants = StandingIdleVariantCatalog.Analyze(inspections);
                     var detail = variants.AllVariantsSupported
-                        ? "This target uses Dancy's validated multi-section Standing Idle strategy: replace the primary idle motion while preserving target-native auxiliary motion and timelines."
-                        : $"Only {variants.SupportedVariantCount} of {variants.TotalVariantCount} current variants match Dancy's exact Standing Idle topology. Unsupported variants remain excluded.";
+                        ? "Dancy can safely use every current Standing Idle variant while preserving the target's required idle structure."
+                        : variants.HasSupportedVariants
+                            ? $"Dancy can safely use {variants.SupportedVariantCount} of {variants.TotalVariantCount} current Standing Idle variants. The remaining variants stay untouched."
+                            : "Dancy recognizes Standing Idle, but none of its current variants can be used safely.";
                     return targetPapStatusById[targetId] = new TargetPapStatus(
                         variants.HasSupportedVariants,
-                        variants.HasSupportedVariants ? "Compatible" : "Unsupported: topology mismatch",
+                        variants.HasSupportedVariants
+                            ? variants.AllVariantsSupported ? "Compatible" : "Compatible with limits"
+                            : "Unavailable",
                         detail,
                         variants.SupportedVariantCount,
                         variants.TotalVariantCount,
@@ -1120,28 +1211,29 @@ namespace Dancy.Windows
                 {
                     return targetPapStatusById[targetId] = new TargetPapStatus(
                         true,
-                        "PAP ready",
-                        "This target's current PAP variants satisfy Dancy's one-animation, one-TMB-section preflight.");
+                        "Compatible",
+                        "Dancy can safely use this target's current variants.");
                 }
 
                 var complex = inspections.Select(inspection => inspection.Inspection)
                     .FirstOrDefault(inspection => inspection.AnimationCount != 1 || inspection.TimelineSectionSizes.Count != 1);
                 return targetPapStatusById[targetId] = new TargetPapStatus(
                     false,
-                    $"Unsupported: {complex?.AnimationCount ?? 0} animation / {complex?.TimelineSectionSizes.Count ?? 0} TMB",
-                    $"Dancy recognizes {target.Name} as {TargetSemantics.DisplayName(target.Behavior)} / {TargetSemantics.DisplayName(target.Context)}, but its PAP does not match either Dancy's one-section structure or the fixed Standing Idle motion-0 topology. Dancy will not rewrite an arbitrary multi-section target.");
+                    "Unsupported structure",
+                    $"Dancy recognizes {target.Name}, but its current animation layout is not one Dancy can safely override. Choose a compatible target instead.");
             }
-            catch (Exception exception)
+            catch (Exception)
             {
                 return targetPapStatusById[targetId] = new TargetPapStatus(
                     false,
-                    $"Unavailable: {exception.GetType().Name}",
-                    $"Dancy could not inspect {target.Name}'s PAP structure. Refresh Data or choose another target.");
+                    "Unavailable",
+                    $"Dancy could not inspect {target.Name} yet. Refresh Data or choose another target.");
             }
         }
 
         private PapCompatibilityResult InspectCompatibility(OverridePlan plan)
         {
+            previewSourceSelections.Clear();
             if (!plan.IsValid)
                 return new PapCompatibilityResult(PapCompatibilityStatus.Unknown, "Select valid Loop source paths before compatibility can be inspected.");
 
@@ -1159,10 +1251,19 @@ namespace Dancy.Windows
                     if (!PathSafety.TryResolveInsideRoot(modFolder, copy.SourcePapPath, out var sourcePath))
                         throw new InvalidOperationException($"Dancy refused an unsafe source PAP path: {copy.SourcePapPath}");
                     var source = PapFileInspector.InspectFile(sourcePath);
+                    var selectionResult = SourceAnimationSelectionResolver.Resolve(modFolder, copy);
+                    if (!selectionResult.IsSuccess || selectionResult.Selection is null)
+                    {
+                        return new PapCompatibilityResult(
+                            PapCompatibilityStatus.Unsupported,
+                            selectionResult.Error ?? "Dancy could not select one source animation from the PAP.",
+                            Blocker: PapCompatibilityBlocker.Source);
+                    }
+                    previewSourceSelections[copy.OutputRelativePath] = new SourceSelectionPreview(source.AnimationCount, selectionResult.Selection);
                     var targets = copy.TargetGamePaths
                         .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path)))
                         .ToList();
-                    return PapCompatibilityPreflight.Evaluate(source, targets);
+                    return PapCompatibilityPreflight.Evaluate(source, selectionResult.Selection, targets);
                 });
                 return PapCompatibilityPreflight.Combine(results);
             }
@@ -1172,7 +1273,12 @@ namespace Dancy.Windows
             }
         }
 
-        private static void DrawMappingPreview(OverridePlan plan, LuminaEmote target, PapCompatibilityResult compatibility)
+        private void DrawMappingPreview(
+            OverridePlan plan,
+            RemappableOption source,
+            IReadOnlyList<ParsedEmoteOverride> selectedSources,
+            LuminaEmote target,
+            PapCompatibilityResult compatibility)
         {
             ImGui.Spacing();
             ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Mapping preview");
@@ -1182,24 +1288,46 @@ namespace Dancy.Windows
                 return;
             }
 
-            if (IsCanonicalStandingIdleTarget(target) && compatibility.WriteStrategy == PapOverrideWriteStrategy.StandingIdleMotion0)
+            if (BeginKeyValueTable("DancyMappingPreview"))
             {
-                ImGui.TextUnformatted($"Target: {target.Name}");
-                ImGui.TextUnformatted("Strategy: Target-native multi-section shell");
+                var sourceSelection = PreviewSelectionFor(plan);
+                DrawSummaryRow("Source", DescribeSourceAnimation(source));
+                DrawSummaryRow("Option", source.OptionName);
+                DrawSummaryRow("Source structure", DescribeSourceStructure(sourceSelection));
+                if (sourceSelection?.Selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent)
+                    DrawSummaryRow("Selected animation", source.OptionName);
+                DrawSummaryRow("Target", target.Name);
+                DrawSummaryRow("Affected", $"{plan.PlannedMappings.Count} target path{(plan.PlannedMappings.Count == 1 ? string.Empty : "s")}");
+                DrawSummaryRow("PAP origin", DescribePapOrigins(selectedSources));
+                DrawSummaryRow("Strategy", DescribeMappingStrategy(compatibility.WriteStrategy));
+                DrawSummaryRow("Compatibility", DescribeCompatibility(compatibility));
+                ImGui.EndTable();
             }
 
-            foreach (var copy in plan.PapCopies)
+            if (ImGui.TreeNode("Technical mapping details"))
             {
-                var strategies = string.Join(", ", copy.MatchResults
-                    .Select(result => result.Strategy.ToString())
-                    .Distinct(StringComparer.Ordinal));
-                var appliesTo = copy.TargetGamePaths
-                    .Select(path => GamePathIdentity.Parse(path).Character)
-                    .Where(character => character.IsKnown)
-                    .Select(character => character.DisplayName)
-                    .Distinct(StringComparer.OrdinalIgnoreCase);
-                ImGui.TextWrapped($"Source: {copy.SourcePapPath}");
-                ImGui.TextWrapped($"Applies to: {string.Join(", ", appliesTo)} [{strategies}]");
+                foreach (var copy in plan.PapCopies)
+                {
+                    var strategies = string.Join(", ", copy.MatchResults
+                        .Select(result => result.Strategy.ToString())
+                        .Distinct(StringComparer.Ordinal));
+                    ImGui.TextWrapped($"Source PAP: {copy.SourcePapPath}");
+                    ImGui.TextWrapped($"Match strategy: {strategies}");
+                    if (previewSourceSelections.TryGetValue(copy.OutputRelativePath, out var selection))
+                    {
+                        ImGui.TextWrapped($"Selector: {selection.Selection.AnimationEvent}");
+                        ImGui.TextWrapped($"Selection: Header {selection.Selection.AnimationHeaderIndex} · Motion {selection.Selection.HavokMotionIndex} · Timeline {selection.Selection.EmbeddedTmbIndex}");
+                        ImGui.TextWrapped($"Selection evidence: {DescribeSelectionMethod(selection.Selection.Method)}");
+                    }
+                    foreach (var targetPath in copy.TargetGamePaths)
+                        ImGui.BulletText(targetPath);
+                }
+                if (PreviewSelectionFor(plan)?.Selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+                    && source.CompanionTimelines.Any(timeline => timeline.IsActionTimeline))
+                {
+                    ImGui.TextDisabled("Source option includes companion timeline effects that are not part of the PAP override.");
+                }
+                ImGui.TreePop();
             }
 
             foreach (var warning in plan.Warnings)
@@ -1208,6 +1336,198 @@ namespace Dancy.Windows
 
         private static bool IsCanonicalStandingIdleTarget(LuminaEmote target)
             => string.Equals(target.PrimaryTimelineKey, "normal/idle", StringComparison.OrdinalIgnoreCase);
+
+        private SourceSelectionPreview? PreviewSelectionFor(OverridePlan plan)
+            => plan.PapCopies
+                .Select(copy => previewSourceSelections.TryGetValue(copy.OutputRelativePath, out var selection) ? selection : null)
+                .FirstOrDefault(selection => selection is not null);
+
+        private static string DescribeSourceStructure(SourceSelectionPreview? preview)
+        {
+            if (preview is null)
+                return "Inspecting source";
+            return preview.AnimationCount == 1
+                ? "Single motion"
+                : $"Animation bank · {preview.AnimationCount} motions";
+        }
+
+        private static string DescribeSelectionMethod(SourceAnimationSelectionMethod method)
+            => method switch
+            {
+                SourceAnimationSelectionMethod.SingleMotion => "Single source motion",
+                SourceAnimationSelectionMethod.CompanionTimelineEvent => "Companion timeline event",
+                _ => method.ToString(),
+            };
+
+        private static string DescribeSourceAnimation(RemappableOption source)
+        {
+            var animations = source.LogicalAnimations
+                .Select(animation => string.IsNullOrWhiteSpace(animation.Command)
+                    ? animation.Name
+                    : $"{animation.Name} ({animation.Command})")
+                .ToList();
+            return animations.Count == 0 ? source.OptionName : string.Join(", ", animations);
+        }
+
+        private static string DescribeVariantCount(TargetPapStatus status, int targetPathCount)
+        {
+            if (!status.UsesStandingIdleWriter)
+                return targetPathCount.ToString();
+
+            if (status.TotalVariantCount == 0)
+                return "0";
+
+            return status.SupportedVariantCount == status.TotalVariantCount
+                ? status.TotalVariantCount.ToString()
+                : $"{status.SupportedVariantCount} / {status.TotalVariantCount}";
+        }
+
+        private static string DescribeCompatibility(PapCompatibilityResult compatibility)
+            => compatibility.Status switch
+            {
+                PapCompatibilityStatus.Compatible => "Compatible",
+                PapCompatibilityStatus.CompatibleWithWarning => "Compatible with note",
+                PapCompatibilityStatus.Unsupported => "Unsupported",
+                _ => "Needs review",
+            };
+
+        private static string DescribeBlockedCombination(PapCompatibilityResult compatibility)
+            => compatibility.Blocker switch
+            {
+                PapCompatibilityBlocker.Source => compatibility.Reason,
+                PapCompatibilityBlocker.Target => "Dancy cannot safely use the selected target's current PAP structure. Choose another target.",
+                _ => "Dancy cannot safely create this combination. Review the compatibility details before choosing another source or target.",
+            };
+
+        private static string DescribeMappingStrategy(PapOverrideWriteStrategy? strategy)
+            => strategy switch
+            {
+                PapOverrideWriteStrategy.StandingIdleMotion0 => "Preserve target idle structure",
+                PapOverrideWriteStrategy.SingleSectionEventPatch => "Standard target redirect",
+                _ => "Validated target mapping",
+            };
+
+        private static string DescribePapOrigins(IReadOnlyList<ParsedEmoteOverride> sources)
+        {
+            var origins = sources
+                .Select(entry => entry.PapOrigin.IsKnown ? entry.PapOrigin.DisplayName : "Mod-relative file")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return origins.Count switch
+            {
+                0 => "Not available",
+                1 => origins[0],
+                _ => $"{origins.Count} source variants",
+            };
+        }
+
+        private static void DrawSummaryRow(string label, string value)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextDisabled(label);
+            ImGui.TableNextColumn();
+            if (ImGui.CalcTextSize(value).X <= ImGui.GetContentRegionAvail().X)
+                ImGui.TextUnformatted(value);
+            else
+                ImGui.TextWrapped(value);
+        }
+
+        private static bool BeginKeyValueTable(string id)
+        {
+            var flags = ImGuiTableFlags.BordersInnerV
+                        | ImGuiTableFlags.SizingStretchProp
+                        | ImGuiTableFlags.NoSavedSettings;
+            if (!ImGui.BeginTable(id, 2, flags))
+                return false;
+
+            var labelWidth = Math.Max(112f, ImGui.CalcTextSize("Compatibility").X + 20f);
+            ImGui.TableSetupColumn("Label", ImGuiTableColumnFlags.WidthFixed, labelWidth);
+            ImGui.TableSetupColumn("Value", ImGuiTableColumnFlags.WidthStretch, 1f);
+            return true;
+        }
+
+        private static bool HasPartialVariantSupport(TargetPapStatus status)
+            => status.IsSupported
+                && status.UsesStandingIdleWriter
+                && status.TotalVariantCount > status.SupportedVariantCount;
+
+        private static void DrawBehaviorNotice(TargetBehaviorNotice notice)
+        {
+            if (notice.Level == TargetNoticeLevel.Informational)
+            {
+                ImGui.TextDisabled(notice.Description);
+                return;
+            }
+
+            ImGui.PushStyleColor(ImGuiCol.Text, CautionTextColor);
+            if (!string.IsNullOrWhiteSpace(notice.Heading))
+                ImGui.TextUnformatted(notice.Heading);
+            ImGui.TextWrapped(notice.Description);
+            ImGui.PopStyleColor();
+        }
+
+        private static ExistingOverrideSummary DescribeExistingOverride(DancyOverrideInfo existing)
+        {
+            var descriptionSource = DescriptionValue(existing.Description, "Animation:");
+            var descriptionTarget = DescriptionValue(existing.Description, "Target:");
+            var descriptionOption = DescriptionValue(existing.Description, "Option:");
+            var legacy = string.IsNullOrWhiteSpace(descriptionSource) || string.IsNullOrWhiteSpace(descriptionTarget);
+
+            var source = descriptionSource;
+            var target = descriptionTarget;
+            if (legacy)
+            {
+                var separator = existing.Name.IndexOf(" -> ", StringComparison.Ordinal);
+                if (separator >= 0)
+                {
+                    source = existing.Name[..separator].Trim();
+                    var targetWithCount = existing.Name[(separator + 4)..];
+                    var countSeparator = targetWithCount.LastIndexOf(" · ", StringComparison.Ordinal);
+                    target = (countSeparator < 0 ? targetWithCount : targetWithCount[..countSeparator]).Trim();
+                }
+            }
+
+            source = string.IsNullOrWhiteSpace(source) ? "Dancy source" : source;
+            target = string.IsNullOrWhiteSpace(target) ? "Dancy target" : target;
+            var targetModel = EmoteLibrary.AllEmotes.FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, target, StringComparison.OrdinalIgnoreCase)
+                || target.StartsWith(candidate.Name + " (", StringComparison.OrdinalIgnoreCase));
+
+            return new ExistingOverrideSummary(
+                source,
+                descriptionOption,
+                target,
+                targetModel is null ? "Dancy override" : TargetSemantics.DisplayName(targetModel.Behavior),
+                targetModel is null ? "Details unavailable" : TargetSemantics.DisplayName(targetModel.Context),
+                legacy);
+        }
+
+        private static string DescriptionValue(string description, string label)
+        {
+            var line = description.Split('\n')
+                .Select(value => value.Trim())
+                .FirstOrDefault(value => value.StartsWith(label, StringComparison.OrdinalIgnoreCase));
+            return line is null ? string.Empty : line[label.Length..].Trim();
+        }
+
+        private static void CopyExistingOverrideDetails(DancyOverrideInfo existing, ExistingOverrideSummary summary)
+        {
+            var details = new StringBuilder();
+            details.AppendLine("Dancy override");
+            details.AppendLine($"Source: {summary.Source}");
+            if (!string.IsNullOrWhiteSpace(summary.Option))
+                details.AppendLine($"Option: {summary.Option}");
+            details.AppendLine($"Target: {summary.Target}");
+            details.AppendLine($"Type: {summary.Type}");
+            details.AppendLine($"Context: {summary.Context}");
+            details.AppendLine($"Affected: {existing.Mappings.Count} target path{(existing.Mappings.Count == 1 ? string.Empty : "s")}");
+            details.AppendLine();
+            details.AppendLine("Mappings:");
+            foreach (var mapping in existing.Mappings.OrderBy(mapping => mapping.Key, StringComparer.OrdinalIgnoreCase))
+                details.AppendLine($"{mapping.Key} -> {mapping.Value}");
+            ImGui.SetClipboardText(details.ToString());
+        }
 
         private async Task CreateOverrideAsync(
             RemappableOption source,
@@ -1288,9 +1608,15 @@ namespace Dancy.Windows
             foreach (var patch in execution.PapResults)
             {
                 diagnostics.AppendLine($"Patched: {patch.TargetGamePath} -> {patch.EventIdentifier} ({patch.PatchedTimelineEntries} timeline entries; {patch.WriteStrategy})");
+                if (patch.SourceSelection is not null)
+                {
+                    diagnostics.AppendLine($"  source selection: {patch.SourceSelection.Method}; header {patch.SourceSelection.AnimationHeaderIndex}; motion {patch.SourceSelection.HavokMotionIndex}; timeline {patch.SourceSelection.EmbeddedTmbIndex}; event {patch.SourceSelection.AnimationEvent}");
+                    diagnostics.AppendLine($"  selection evidence: {patch.SourceSelection.Evidence}");
+                }
+                if (!string.IsNullOrWhiteSpace(patch.SourceMotionFingerprint))
+                    diagnostics.AppendLine($"  selected source fingerprint: {patch.SourceMotionFingerprint}");
                 if (patch.WriteStrategy == PapOverrideWriteStrategy.StandingIdleMotion0)
                 {
-                    diagnostics.AppendLine($"  source motion 0 fingerprint: {patch.SourceMotionFingerprint}");
                     diagnostics.AppendLine($"  preserved target motion 1 fingerprint: {patch.PreservedTargetMotionFingerprint}");
                     diagnostics.AppendLine($"  preserved target TMB hashes: {string.Join(", ", patch.PreservedTargetTimelineHashes)}");
                 }

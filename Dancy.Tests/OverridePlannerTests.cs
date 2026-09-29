@@ -1,3 +1,4 @@
+using Dancy.Core.Models;
 using Dancy.Domain;
 using Xunit;
 
@@ -115,7 +116,41 @@ public class OverridePlannerTests
         var copy = Assert.Single(plan.PapCopies);
         Assert.True(plan.IsValid);
         Assert.Equal(2, copy.SourceGamePaths.Count);
+        Assert.Equal(1, copy.SourceOptionPhysicalPapCount);
         Assert.Equal(2, plan.PlannedMappings.Count);
+    }
+
+    [Fact]
+    public void GivesSharedPhysicalSourcePapsDifferentStableIdsForDifferentOptionSelectors()
+    {
+        OverridePlanRequest Request(string option, string companion) => new()
+        {
+            ModIdentity = "warrior-of-lift",
+            SourceGroupName = "Treadmill - /breathcontrol",
+            SourceOptionName = option,
+            TargetTimelineKey = "emote/target_loop",
+            TargetName = "Target",
+            Sources = new[]
+            {
+                new OverridePlanSource("chara/human/c0101/animation/a0001/bt_common/emote/loop_emot11_loop.pap", "files/shared.pap"),
+            },
+            CompanionTimelines = new[]
+            {
+                new CompanionTimelineOverride($"chara/action/emote/{companion}", $"files/chara/action/emote/{companion}"),
+            },
+            TargetGamePaths = new[]
+            {
+                "chara/human/c0101/animation/a0001/bt_common/emote/target_loop.pap",
+            },
+        };
+
+        var run = OverridePlanner.Create(Request("Run", "loop_emot11_loop_run.tmb"));
+        var sprint = OverridePlanner.Create(Request("Sprint", "loop_emot11_loop_sprint.tmb"));
+
+        Assert.True(run.IsValid);
+        Assert.True(sprint.IsValid);
+        Assert.NotEqual(run.OverrideId, sprint.OverrideId);
+        Assert.NotEqual(run.PapCopies[0].OutputRelativePath, sprint.PapCopies[0].OutputRelativePath);
     }
 
     [Fact]

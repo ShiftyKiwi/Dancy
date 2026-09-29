@@ -18,12 +18,20 @@ public enum PapOverrideWriteStrategy
     StandingIdleMotion0,
 }
 
+public enum PapCompatibilityBlocker
+{
+    None,
+    Source,
+    Target,
+}
+
 public sealed record PapTargetInspection(string GamePath, PapFileInspector.PapFileInspection Inspection);
 
 public sealed record PapCompatibilityResult(
     PapCompatibilityStatus Status,
     string Reason,
-    PapOverrideWriteStrategy? WriteStrategy = null)
+    PapOverrideWriteStrategy? WriteStrategy = null,
+    PapCompatibilityBlocker Blocker = PapCompatibilityBlocker.None)
 {
     public bool CanCreate => Status is PapCompatibilityStatus.Compatible or PapCompatibilityStatus.CompatibleWithWarning;
 }
@@ -54,7 +62,8 @@ public static class PapCompatibilityPreflight
         {
             return new PapCompatibilityResult(
                 PapCompatibilityStatus.Unsupported,
-                "The selected source PAP has multiple animation/header or TMB sections. Dancy's repath writer only supports one-section loop PAPs.");
+                DescribeUnsupportedSource(source),
+                Blocker: PapCompatibilityBlocker.Source);
         }
 
         var results = targetList.Select(target => Evaluate(source, target)).ToList();
@@ -63,25 +72,55 @@ public static class PapCompatibilityPreflight
 
     public static PapCompatibilityResult Evaluate(
         PapFileInspector.PapFileInspection source,
+        SourceAnimationSelection selection,
+        IEnumerable<PapTargetInspection> targets)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        var targetList = targets.ToList();
+        if (targetList.Count == 0)
+            return new PapCompatibilityResult(PapCompatibilityStatus.Unknown, "Dancy could not inspect any target PAP variants.");
+
+        return Combine(targetList.Select(target => Evaluate(source, selection, target)));
+    }
+
+    public static PapCompatibilityResult Evaluate(
+        PapFileInspector.PapFileInspection source,
+        PapTargetInspection target)
+        => Evaluate(source, CreateSingleMotionSelection(source), target);
+
+    public static PapCompatibilityResult Evaluate(
+        PapFileInspector.PapFileInspection source,
+        SourceAnimationSelection selection,
         PapTargetInspection target)
     {
         ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(selection);
         ArgumentNullException.ThrowIfNull(target);
 
-        if (source.AnimationCount != 1 || source.TimelineSectionSizes.Count != 1)
+        if (!TryValidateSelection(source, selection, out var selectionError))
         {
             return new PapCompatibilityResult(
                 PapCompatibilityStatus.Unsupported,
-                "The selected source PAP has multiple animation/header or TMB sections. Dancy's repath writer only supports one-section loop PAPs.");
+                selectionError,
+                Blocker: PapCompatibilityBlocker.Source);
         }
 
         if (IsSupportedStandingIdleTarget(target, out var standingIdleReason))
         {
-            if (!Matches(source.HavokIndices, 0, 0))
+            if (source.AnimationCount != 1 || selection.Method != SourceAnimationSelectionMethod.SingleMotion)
             {
                 return new PapCompatibilityResult(
                     PapCompatibilityStatus.Unsupported,
-                    "The proven Standing Idle route requires a one-section loop source bound to Havok motion 0.");
+                    "Standing Idle currently requires a one-motion source PAP. Dancy has not enabled selector-backed source banks for this target topology.",
+                    Blocker: PapCompatibilityBlocker.Source);
+            }
+
+            if (selection.HavokMotionIndex != 0)
+            {
+                return new PapCompatibilityResult(
+                    PapCompatibilityStatus.Unsupported,
+                    "The proven Standing Idle route requires a one-section loop source bound to Havok motion 0.",
+                    Blocker: PapCompatibilityBlocker.Source);
             }
 
             return new PapCompatibilityResult(
@@ -94,10 +133,11 @@ public static class PapCompatibilityPreflight
         {
             return new PapCompatibilityResult(
                 PapCompatibilityStatus.Unsupported,
-                "The target PAP is not Dancy's exact supported Standing Idle layout and has multiple animation/header or TMB sections. Dancy will not rewrite an arbitrary section.");
+                "The target PAP is not Dancy's exact supported Standing Idle layout and has multiple animation/header or TMB sections. Dancy will not rewrite an arbitrary section.",
+                Blocker: PapCompatibilityBlocker.Target);
         }
 
-        var sourceHavok = source.HavokIndices.SingleOrDefault();
+        var sourceHavok = selection.HavokMotionIndex;
         var targetHavok = target.Inspection.HavokIndices.SingleOrDefault();
         if (targetHavok != sourceHavok)
         {
@@ -151,6 +191,60 @@ public static class PapCompatibilityPreflight
 
     private static bool Matches<T>(IReadOnlyList<T> values, int index, T expected)
         => index >= 0 && index < values.Count && EqualityComparer<T>.Default.Equals(values[index], expected);
+
+    private static string DescribeUnsupportedSource(PapFileInspector.PapFileInspection source)
+        => $"The selected source PAP contains {source.AnimationCount} animation header{Plural(source.AnimationCount)} and {source.TimelineSectionSizes.Count} TMB section{Plural(source.TimelineSectionSizes.Count)}. Dancy only supports source PAPs with one animation header and one TMB section.";
+
+    private static SourceAnimationSelection CreateSingleMotionSelection(PapFileInspector.PapFileInspection source)
+    {
+        if (source.AnimationCount != 1 || source.TimelineSectionSizes.Count != 1 || source.AnimationNames.Count != 1 || source.HavokIndices.Count != 1)
+            return new SourceAnimationSelection(string.Empty, string.Empty, -1, string.Empty, -1, -1, SourceAnimationSelectionMethod.SingleMotion, string.Empty);
+
+        return new SourceAnimationSelection(
+            string.Empty,
+            string.Empty,
+            0,
+            source.AnimationNames[0],
+            source.HavokIndices[0],
+            0,
+            SourceAnimationSelectionMethod.SingleMotion,
+            "Implicit selection from a one-motion source PAP.");
+    }
+
+    private static bool TryValidateSelection(PapFileInspector.PapFileInspection source, SourceAnimationSelection selection, out string error)
+    {
+        if (selection.AnimationHeaderIndex < 0 || selection.AnimationHeaderIndex >= source.AnimationCount
+            || selection.EmbeddedTmbIndex < 0 || selection.EmbeddedTmbIndex >= source.TimelineSectionSizes.Count
+            || selection.EmbeddedTmbIndex != selection.AnimationHeaderIndex
+            || selection.AnimationHeaderIndex >= source.AnimationNames.Count
+            || selection.AnimationHeaderIndex >= source.HavokIndices.Count)
+        {
+            error = source.AnimationCount > 1
+                ? "This source PAP contains multiple animations, and Dancy could not determine one unambiguous source animation unit."
+                : DescribeUnsupportedSource(source);
+            return false;
+        }
+
+        if (!string.Equals(source.AnimationNames[selection.AnimationHeaderIndex], selection.AnimationEvent, StringComparison.OrdinalIgnoreCase)
+            || source.HavokIndices[selection.AnimationHeaderIndex] != selection.HavokMotionIndex
+            || selection.HavokMotionIndex < 0)
+        {
+            error = "The selected source animation no longer matches its verified PAP header or Havok motion binding.";
+            return false;
+        }
+
+        if (source.AnimationCount > 1 && selection.Method != SourceAnimationSelectionMethod.CompanionTimelineEvent)
+        {
+            error = "This source PAP contains multiple animations, and Dancy could not determine which animation this mod option uses.";
+            return false;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    private static string Plural(int count)
+        => count == 1 ? string.Empty : "s";
 
     public static PapCompatibilityResult Combine(IEnumerable<PapCompatibilityResult> results)
     {

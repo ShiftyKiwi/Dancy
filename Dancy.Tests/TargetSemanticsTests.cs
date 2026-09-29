@@ -33,7 +33,9 @@ public class TargetSemanticsTests
 
         Assert.Equal(TargetBehavior.PersistentPose, behavior);
         Assert.True(TargetEmotePolicy.IsVisible(TargetSelectionCategory.PosesAndIdles, behavior));
-        Assert.Contains("remains active", TargetSemantics.BehaviorNotice(behavior));
+        var notice = Assert.IsType<TargetBehaviorNotice>(TargetSemantics.BehaviorNotice(behavior));
+        Assert.Equal(TargetNoticeLevel.Informational, notice.Level);
+        Assert.Contains("Remains active", notice.Description);
     }
 
     [Fact]
@@ -46,7 +48,9 @@ public class TargetSemanticsTests
             primaryPhase: AnimationPhase.Start);
 
         Assert.Equal(TargetBehavior.OneShot, behavior);
-        Assert.Contains("one-shot", TargetSemantics.BehaviorNotice(behavior));
+        var notice = Assert.IsType<TargetBehaviorNotice>(TargetSemantics.BehaviorNotice(behavior));
+        Assert.Equal(TargetNoticeLevel.Caution, notice.Level);
+        Assert.Equal("One-shot target", notice.Heading);
         Assert.True(TargetEmotePolicy.IsVisible(TargetSelectionCategory.Advanced, behavior));
     }
 
@@ -75,7 +79,10 @@ public class TargetSemanticsTests
             primaryPhase: AnimationPhase.Unknown);
 
         Assert.Equal(TargetBehavior.Unknown, behavior);
-        Assert.Contains("could not determine", TargetSemantics.BehaviorNotice(behavior));
+        var notice = Assert.IsType<TargetBehaviorNotice>(TargetSemantics.BehaviorNotice(behavior));
+        Assert.Equal(TargetNoticeLevel.Caution, notice.Level);
+        Assert.Equal("Playback behavior unknown", notice.Heading);
+        Assert.Contains("could not be determined", notice.Description);
     }
 
     [Theory]

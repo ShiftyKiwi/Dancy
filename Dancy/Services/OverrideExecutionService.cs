@@ -79,11 +79,15 @@ public sealed class OverrideExecutionService
                     throw new FileNotFoundException("The selected source PAP does not exist.", sourcePapPath);
 
                 var sourceInspection = PapFileInspector.InspectFile(sourcePapPath);
+                var selectionResult = SourceAnimationSelectionResolver.Resolve(modFolder, copy);
+                if (!selectionResult.IsSuccess || selectionResult.Selection is null)
+                    throw new InvalidOperationException(selectionResult.Error ?? "Dancy could not select one source animation from the PAP.");
+                var sourceSelection = selectionResult.Selection;
                 var targetInspections = OnFrameworkThread(() => copy.TargetGamePaths
                     .Select(path => new PapTargetInspection(path, PapEditor.InspectTargetPap(path)))
                     .ToList());
                 var targetStrategies = targetInspections
-                    .Select(target => (Target: target, Compatibility: PapCompatibilityPreflight.Evaluate(sourceInspection, target)))
+                    .Select(target => (Target: target, Compatibility: PapCompatibilityPreflight.Evaluate(sourceInspection, sourceSelection, target)))
                     .ToList();
                 compatibilityResults.AddRange(targetStrategies.Select(pair => pair.Compatibility));
                 var unsupported = targetStrategies.FirstOrDefault(pair => !pair.Compatibility.CanCreate);
@@ -135,7 +139,9 @@ public sealed class OverrideExecutionService
                     if (!PathSafety.TryResolveInsideRoot(modFolder, outputRelativePath, out var outputPath))
                         throw new InvalidOperationException($"Dancy refused an unsafe generated PAP path: {outputRelativePath}");
 
-                    var temporaryOutput = outputPath + $".{Guid.NewGuid():N}.tmp";
+                    // VFXEditor validates the file extension before it fingerprints the selected source motion.
+                    // Keep this transaction-local artifact visibly a PAP until it is atomically moved into place.
+                    var temporaryOutput = CreateTemporaryPapPath(outputPath);
                     var transaction = CreateTransaction(outputPath);
                     transactions.Add(transaction);
                     try
@@ -143,6 +149,7 @@ public sealed class OverrideExecutionService
                         var patchResult = OnFrameworkThread(() => PapEditor.ApplyOverride(
                             eventGroup.First().GamePath,
                             sourcePapPath,
+                            sourceSelection,
                             temporaryOutput));
                         File.Move(temporaryOutput, outputPath, overwrite: true);
                         papResults.Add(patchResult);

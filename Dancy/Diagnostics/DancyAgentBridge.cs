@@ -18,6 +18,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string ReviewSurfaceId = "dancy.debug";
     private const string SelfTestControlId = "dancy.debug.run-selftest";
     private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
+    private const string TreadmillSelectorRegressionControlId = "dancy.debug.run-treadmill-selector-regression";
     private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
     private const string MultiSectionResearchControlId = "dancy.debug.inspect-multisection-paps";
     private const string CorpusResearchControlId = "dancy.debug.index-animation-corpus";
@@ -36,6 +37,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private int selfTestRunning;
     private DancySelfTestResult? lastSelfTest;
     private DancySelfTestResult? lastPushupsWaterRegression;
+    private DancySelfTestResult? lastTreadmillSelectorRegression;
     private DancySelfTestResult? lastTargetCatalogInspection;
     private DancySelfTestResult? lastMultiSectionResearch;
     private DancySelfTestResult? lastCorpusResearch;
@@ -127,6 +129,24 @@ internal sealed class DancyAgentBridge : IDisposable
             mutating: true,
             completionOperationKind: "dancy.debug.pushups-water-regression",
             _ => StartPushupsWaterRegression());
+    }
+
+    public void RegisterTreadmillSelectorRegressionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            TreadmillSelectorRegressionControlId,
+            "Run Treadmill selector production regression",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastTreadmillSelectorRegression?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.treadmill-selector-regression",
+            _ => StartTreadmillSelectorRegression());
     }
 
     public void RegisterTargetCatalogInspectionControl(Vector2 min, Vector2 max, bool enabled)
@@ -353,6 +373,47 @@ internal sealed class DancyAgentBridge : IDisposable
         });
 
         return AgentBridgeUiActionResult.Ok("Push-ups to Water production regression started.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartTreadmillSelectorRegression()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.treadmill-selector-regression", "Treadmill selector production regression queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Treadmill selector production regression is running.");
+                var result = new DancyTreadmillSelectorRegressionRunner().Run();
+                lastTreadmillSelectorRegression = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Treadmill selector production regression reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "TreadmillSelectorRegressionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["dancyTestOptionCleaned"] = result.Passed ? "true" : "unknown",
+                        ["conduitTrigger"] = result.Passed ? "completed" : "unknown",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Treadmill selector production regression crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledTreadmillSelectorRegressionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Treadmill selector production regression started. It will create, resolve, trigger through Conduit, and remove only its test override.", operation.Id);
     }
 
     public AgentBridgeUiActionResult StartTargetCatalogInspection()
@@ -729,6 +790,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("snapshot.read"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.selftest"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.treadmill-selector-regression"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.multisection-pap-research"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.animation-corpus-research"),
@@ -750,6 +812,7 @@ internal sealed class DancyAgentBridge : IDisposable
         selfTestRunning = IsSelfTestRunning,
         selfTest = lastSelfTest,
         pushupsWaterRegression = lastPushupsWaterRegression,
+        treadmillSelectorRegression = lastTreadmillSelectorRegression,
         targetCatalogInspection = lastTargetCatalogInspection,
         multiSectionPapResearch = lastMultiSectionResearch,
         animationCorpusResearch = lastCorpusResearch,

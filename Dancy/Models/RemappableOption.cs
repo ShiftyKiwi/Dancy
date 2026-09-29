@@ -11,6 +11,7 @@ public class RemappableOption
     public string OptionName { get; set; } = string.Empty;
     public List<ParsedEmoteOverride> Entries { get; set; } = new();
     public List<PapSourceGroup> PapSources { get; set; } = new();
+    public List<CompanionTimelineOverride> CompanionTimelines { get; set; } = new();
 
     public IReadOnlyList<LogicalSourceAnimation> LogicalAnimations
         => Entries

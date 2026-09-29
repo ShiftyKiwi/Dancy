@@ -37,6 +37,22 @@ public enum TargetSelectionCategory
     Advanced,
 }
 
+/// <summary>
+/// Presentation severity for a known target behavior. This is deliberately
+/// separate from PAP compatibility, which determines whether Dancy can write
+/// an override at all.
+/// </summary>
+public enum TargetNoticeLevel
+{
+    Informational,
+    Caution,
+}
+
+public sealed record TargetBehaviorNotice(
+    TargetNoticeLevel Level,
+    string? Heading,
+    string Description);
+
 public static class TargetSemantics
 {
     public static TargetBehavior Classify(
@@ -87,12 +103,21 @@ public static class TargetSemantics
             _ => "Unknown",
         };
 
-    public static string? BehaviorNotice(TargetBehavior behavior)
+    public static TargetBehaviorNotice? BehaviorNotice(TargetBehavior behavior)
         => behavior switch
         {
-            TargetBehavior.PersistentPose => "This animation remains active while the character remains in the associated state.",
-            TargetBehavior.OneShot => "This is a one-shot target. A looping source may be interrupted when the target animation completes.",
-            TargetBehavior.Unknown => "Dancy could not determine this target's playback behavior. Structural compatibility does not guarantee how long the game will keep it active.",
+            TargetBehavior.PersistentPose => new(
+                TargetNoticeLevel.Informational,
+                null,
+                "Remains active while the associated character state is active."),
+            TargetBehavior.OneShot => new(
+                TargetNoticeLevel.Caution,
+                "One-shot target",
+                "This target normally finishes on its own, so a looping source may stop when the target animation completes."),
+            TargetBehavior.Unknown => new(
+                TargetNoticeLevel.Caution,
+                "Playback behavior unknown",
+                "Dancy can construct this mapping, but the game-controlled duration or state behavior could not be determined."),
             _ => null,
         };
 

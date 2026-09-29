@@ -39,6 +39,67 @@ public class PapCompatibilityPreflightTests
 
         Assert.Equal(PapCompatibilityStatus.Unsupported, result.Status);
         Assert.False(result.CanCreate);
+        Assert.Equal(PapCompatibilityBlocker.Source, result.Blocker);
+        Assert.Contains("2 animation headers", result.Reason, StringComparison.Ordinal);
+        Assert.Contains("2 TMB sections", result.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AcceptsASelectedMultiMotionSourceForANormalOneSectionTarget()
+    {
+        var source = new PapFileInspector.PapFileInspection
+        {
+            AnimationCount = 4,
+            AnimationNames = new[] { "style", "walk", "run", "sprint" },
+            HavokIndices = new[] { 0, 1, 2, 3 },
+            TimelineSectionSizes = new[] { 8, 8, 8, 8 },
+        };
+        var selection = new SourceAnimationSelection(
+            "chara/human/c0101/animation/a0001/bt_common/emote/loop.pap",
+            "files/shared.pap",
+            2,
+            "run",
+            2,
+            2,
+            SourceAnimationSelectionMethod.CompanionTimelineEvent,
+            "Companion timeline selected event run.");
+
+        var result = PapCompatibilityPreflight.Evaluate(
+            source,
+            selection,
+            new PapTargetInspection("chara/human/c0101/animation/a0001/bt_common/emote/target.pap", Inspection("target", 2)));
+
+        Assert.Equal(PapCompatibilityStatus.Compatible, result.Status);
+        Assert.True(result.CanCreate);
+    }
+
+    [Fact]
+    public void KeepsSelectorBackedMultiMotionSourcesOutOfStandingIdle()
+    {
+        var source = new PapFileInspector.PapFileInspection
+        {
+            AnimationCount = 2,
+            AnimationNames = new[] { "style", "run" },
+            HavokIndices = new[] { 0, 1 },
+            TimelineSectionSizes = new[] { 8, 8 },
+        };
+        var selection = new SourceAnimationSelection(
+            "chara/human/c0101/animation/a0001/bt_common/emote/loop.pap",
+            "files/shared.pap",
+            1,
+            "run",
+            1,
+            1,
+            SourceAnimationSelectionMethod.CompanionTimelineEvent,
+            "Companion timeline selected event run.");
+
+        var result = PapCompatibilityPreflight.Evaluate(
+            source,
+            selection,
+            new PapTargetInspection("chara/human/c0701/animation/a0001/bt_common/resident/idle.pap", StandingIdleInspection()));
+
+        Assert.Equal(PapCompatibilityStatus.Unsupported, result.Status);
+        Assert.Contains("selector-backed", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -68,6 +129,7 @@ public class PapCompatibilityPreflightTests
         Assert.Equal(PapCompatibilityStatus.Unsupported, result.Status);
         Assert.False(result.CanCreate);
         Assert.Null(result.WriteStrategy);
+        Assert.Equal(PapCompatibilityBlocker.Target, result.Blocker);
     }
 
     [Fact]

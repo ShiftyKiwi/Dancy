@@ -73,6 +73,15 @@ public class ConfigWindow : Window, IDisposable
 
         if (!canRunSelfTest)
             ImGui.BeginDisabled();
+        var ranTreadmillSelectorRegression = ImGui.Button("Run Treadmill selector production regression");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterTreadmillSelectorRegressionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (ranTreadmillSelectorRegression)
+            plugin.AgentBridge.StartTreadmillSelectorRegression();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
         var inspectedTargetCatalog = ImGui.Button("Inspect current target catalog");
         if (!canRunSelfTest)
             ImGui.EndDisabled();

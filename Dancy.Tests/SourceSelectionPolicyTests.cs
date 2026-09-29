@@ -33,6 +33,21 @@ public class SourceSelectionPolicyTests
     }
 
     [Fact]
+    public void CannotProduceANormalSelectionWhenAnOptionContainsOnlyNonLoopPaths()
+    {
+        var start = Entry("loop_emot08_start.pap", "start.pap");
+        var end = Entry("loop_emot08_end.pap", "end.pap");
+        var seededSelection = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            start.GamePath,
+            end.GamePath,
+        };
+
+        Assert.Empty(SourceSelectionPolicy.DefaultLoopGamePaths(new[] { start, end }));
+        Assert.Empty(SourceSelectionPolicy.SelectedLoopEntries(new[] { start, end }, seededSelection));
+    }
+
+    [Fact]
     public void RepresentsStartAndLoopAsOneLogicalAnimation()
     {
         var option = new RemappableOption

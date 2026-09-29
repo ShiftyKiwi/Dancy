@@ -62,6 +62,7 @@ public static class EmoteOverrideScanner
                     continue;
 
                 var entries = new List<ParsedEmoteOverride>();
+                var companionTimelines = new List<CompanionTimelineOverride>();
 
                 foreach (var kv in filesObj)
                 {
@@ -69,31 +70,17 @@ public static class EmoteOverrideScanner
                     string papPath = kv.Value?.ToString() ?? "";
 
                     if (!TryCreateParsedEntry(groupName, optionName, gamePath, papPath, out var entry))
-                        continue;
-
-                    entries.Add(entry);
+                    {
+                        if (TryCreateCompanionTimeline(gamePath, papPath, out var timeline))
+                            companionTimelines.Add(timeline);
+                    }
+                    else
+                    {
+                        entries.Add(entry);
+                    }
                 }
 
-                if (entries.Count == 0)
-                    continue;
-
-                // ✅ NEU: PAP-Gruppierung NACH QUELLDATEN
-                var papGroups = entries
-                    .GroupBy(e => e.ModdedPapPath, StringComparer.OrdinalIgnoreCase)
-                    .Select(g => new PapSourceGroup
-                    {
-                        SourcePap = g.Key,
-                        GamePaths = g.Select(e => e.GamePath).ToList()
-                    })
-                    .ToList();
-
-                results.Add(new RemappableOption
-                {
-                    GroupName = groupName,
-                    OptionName = optionName,
-                    Entries = entries,
-                    PapSources = papGroups,
-                });
+                AddRemappableOption(results, groupName, optionName, entries, companionTimelines);
             }
         }
 
@@ -121,13 +108,16 @@ public static class EmoteOverrideScanner
                      .GroupBy(mapping => (mapping.GroupName, mapping.OptionName)))
         {
             var entries = new List<ParsedEmoteOverride>();
+            var companionTimelines = new List<CompanionTimelineOverride>();
             foreach (var mapping in optionGroup)
             {
                 if (TryCreateParsedEntry(optionGroup.Key.GroupName, optionGroup.Key.OptionName, mapping.GamePath, mapping.ModPath, out var entry))
                     entries.Add(entry);
+                else if (TryCreateCompanionTimeline(mapping.GamePath, mapping.ModPath, out var timeline))
+                    companionTimelines.Add(timeline);
             }
 
-            AddRemappableOption(results, optionGroup.Key.GroupName, optionGroup.Key.OptionName, entries);
+            AddRemappableOption(results, optionGroup.Key.GroupName, optionGroup.Key.OptionName, entries, companionTimelines);
         }
     }
 
@@ -141,6 +131,7 @@ public static class EmoteOverrideScanner
             return;
 
         var entries = new List<ParsedEmoteOverride>();
+        var companionTimelines = new List<CompanionTimelineOverride>();
 
         foreach (var kv in filesObj)
         {
@@ -148,19 +139,25 @@ public static class EmoteOverrideScanner
             string papPath = kv.Value?.ToString() ?? "";
 
             if (!TryCreateParsedEntry(groupName, optionName, gamePath, papPath, out var entry))
-                continue;
-
-            entries.Add(entry);
+            {
+                if (TryCreateCompanionTimeline(gamePath, papPath, out var timeline))
+                    companionTimelines.Add(timeline);
+            }
+            else
+            {
+                entries.Add(entry);
+            }
         }
 
-        AddRemappableOption(results, groupName, optionName, entries);
+        AddRemappableOption(results, groupName, optionName, entries, companionTimelines);
     }
 
     private static void AddRemappableOption(
         List<RemappableOption> results,
         string groupName,
         string optionName,
-        List<ParsedEmoteOverride> entries)
+        List<ParsedEmoteOverride> entries,
+        List<CompanionTimelineOverride>? companionTimelines = null)
     {
         if (entries.Count == 0)
             return;
@@ -180,6 +177,7 @@ public static class EmoteOverrideScanner
             OptionName = optionName,
             Entries = entries,
             PapSources = papGroups,
+            CompanionTimelines = companionTimelines ?? new List<CompanionTimelineOverride>(),
         });
     }
 
@@ -212,6 +210,19 @@ public static class EmoteOverrideScanner
             EmoteRowId = emote?.RowId ?? 0
         };
 
+        return true;
+    }
+
+    private static bool TryCreateCompanionTimeline(string gamePath, string modPath, out CompanionTimelineOverride timeline)
+    {
+        timeline = new CompanionTimelineOverride(string.Empty, string.Empty);
+        if (!gamePath.EndsWith(".tmb", StringComparison.OrdinalIgnoreCase)
+            || !modPath.EndsWith(".tmb", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        timeline = new CompanionTimelineOverride(gamePath, modPath);
         return true;
     }
 

@@ -37,6 +37,7 @@ public static class PapEditor
         public int PatchedTimelineEntries { get; init; }
         public long OutputLength { get; init; }
         public PapFileInspector.PapFileInspection OutputInspection { get; init; } = new();
+        public SourceAnimationSelection? SourceSelection { get; init; }
         public string SourceMotionFingerprint { get; init; } = string.Empty;
         public string PreservedTargetMotionFingerprint { get; init; } = string.Empty;
         public IReadOnlyList<string> PreservedTargetTimelineHashes { get; init; } = Array.Empty<string>();
@@ -44,9 +45,32 @@ public static class PapEditor
 
     public static PapPatchResult ApplyOverride(string defaultPath, string papPath, string newPap)
     {
+        var sourceInspection = PapFileInspector.InspectFile(papPath);
+        if (sourceInspection.AnimationCount != 1 || sourceInspection.TimelineSectionSizes.Count != 1)
+            throw new InvalidDataException("A source-motion selection is required for a multi-motion PAP.");
+
+        var selection = new SourceAnimationSelection(
+            string.Empty,
+            papPath,
+            0,
+            sourceInspection.AnimationNames[0],
+            sourceInspection.HavokIndices[0],
+            0,
+            SourceAnimationSelectionMethod.SingleMotion,
+            "The source PAP contains one animation header and one embedded timeline.");
+        return ApplyOverride(defaultPath, papPath, selection, newPap);
+    }
+
+    public static PapPatchResult ApplyOverride(
+        string defaultPath,
+        string papPath,
+        SourceAnimationSelection selection,
+        string newPap)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
         var eventIdentifier = ReadTargetEventIdentifier(defaultPath);
         var sourceBytes = PapFileInspector.ReadFileWithRetry(papPath);
-        var patched = PatchPap(sourceBytes, eventIdentifier);
+        var patched = PatchPap(sourceBytes, eventIdentifier, selection);
         var inspection = PapFileInspector.Inspect(patched.Bytes);
 
         var outputDirectory = Path.GetDirectoryName(newPap);
@@ -59,6 +83,10 @@ public static class PapEditor
         if (outputLength == 0)
             throw new InvalidDataException("The generated PAP file is empty.");
 
+        var sourceFingerprint = string.Empty;
+        if (selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent)
+            sourceFingerprint = VerifySelectedSourceMotionFingerprint(papPath, newPap, selection);
+
         return new PapPatchResult
         {
             TargetGamePath = defaultPath,
@@ -68,6 +96,8 @@ public static class PapEditor
             PatchedTimelineEntries = patched.PatchedTimelineEntries,
             OutputLength = outputLength,
             OutputInspection = inspection,
+            SourceSelection = selection,
+            SourceMotionFingerprint = sourceFingerprint,
         };
     }
 
@@ -228,6 +258,40 @@ public static class PapEditor
         return response;
     }
 
+    private static string VerifySelectedSourceMotionFingerprint(
+        string sourcePapPath,
+        string outputPapPath,
+        SourceAnimationSelection selection)
+    {
+        var character = GamePathIdentity.Parse(selection.LogicalGamePath).Character;
+        if (!character.IsKnown)
+            throw new InvalidDataException("Dancy could not determine the selected source animation's skeleton for fingerprint validation.");
+
+        var workspace = Path.Combine(Path.GetTempPath(), "Dancy", "SourceMotionFingerprint", Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(workspace);
+            var skeletonPath = Path.Combine(workspace, $"skl_{character.Code}b0001.sklb");
+            CopyGameAsset($"chara/human/{character.Code}/skeleton/base/b0001/skl_{character.Code}b0001.sklb", skeletonPath);
+
+            var source = Fingerprint(sourcePapPath, skeletonPath, selection.HavokMotionIndex);
+            var output = Fingerprint(outputPapPath, skeletonPath, selection.HavokMotionIndex);
+            RequireFingerprint(output, source, "Selected source motion");
+            return source.FingerprintSha256;
+        }
+        finally
+        {
+            if (Directory.Exists(workspace))
+            {
+                try { Directory.Delete(workspace, recursive: true); }
+                catch (Exception exception)
+                {
+                    Svc.Log.Warning(exception, "[Dancy] Could not remove the temporary source-motion fingerprint workspace.");
+                }
+            }
+        }
+    }
+
     private static PapIntegrity CaptureIntegrity(string path)
     {
         var bytes = PapFileInspector.ReadFileWithRetry(path);
@@ -281,26 +345,45 @@ public static class PapEditor
         var bytes = PapFileInspector.ReadFileWithRetry(papPath);
         var inspection = PapFileInspector.Inspect(bytes);
         var sections = ReadTmbSections(bytes, inspection.TimelineOffset, inspection.AnimationCount, inspection.TimelineOffset % 4);
-        var pathField = typeof(C009).GetField("Path", BindingFlags.Instance | BindingFlags.NonPublic);
-        var identifiers = new List<string>();
+        return sections.SelectMany(ReadPapAnimationEventIdentifiers).ToList();
+    }
 
-        foreach (var section in sections)
+    public static IReadOnlyList<IReadOnlyList<string>> ReadEmbeddedTimelineEventIdentifiers(string papPath)
+    {
+        var bytes = PapFileInspector.ReadFileWithRetry(papPath);
+        var inspection = PapFileInspector.Inspect(bytes);
+        return ReadTmbSections(bytes, inspection.TimelineOffset, inspection.AnimationCount, inspection.TimelineOffset % 4)
+            .Select(section => (IReadOnlyList<string>)ReadPapAnimationEventIdentifiers(section))
+            .ToList();
+    }
+
+    public static IReadOnlyList<string> ReadCompanionTimelineEventIdentifiers(string timelinePath)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(timelinePath);
+        return ReadCompanionTimelineEventIdentifiers(PapFileInspector.ReadFileWithRetry(timelinePath));
+    }
+
+    private static List<string> ReadPapAnimationEventIdentifiers(byte[] tmbBytes)
+        => ReadTmbEventIdentifiers(tmbBytes, entry => entry is C009);
+
+    private static List<string> ReadCompanionTimelineEventIdentifiers(byte[] tmbBytes)
+        => ReadTmbEventIdentifiers(tmbBytes, entry => entry is C009 or C010);
+
+    private static List<string> ReadTmbEventIdentifiers(byte[] tmbBytes, Func<TmbEntry, bool> isAnimationEntry)
+    {
+        using var stream = new MemoryStream(tmbBytes);
+        using var reader = new BinaryReader(stream);
+        var tmb = new TmbFile(reader, null!, verify: false);
+        try
         {
-            using var stream = new MemoryStream(section);
-            using var reader = new BinaryReader(stream);
-            var tmb = new TmbFile(reader, null!, verify: false);
-            try
-            {
-                foreach (var entry in tmb.AllEntries.OfType<C009>())
-                {
-                    if (pathField?.GetValue(entry) is TmbOffsetString path && !string.IsNullOrWhiteSpace(path.Value))
-                        identifiers.Add(path.Value);
-                }
-            }
-            finally { tmb.Dispose(); }
+            return tmb.AllEntries
+                .Where(isAnimationEntry)
+                .Select(entry => entry.GetType().GetField("Path", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(entry) as TmbOffsetString)
+                .Where(path => !string.IsNullOrWhiteSpace(path?.Value))
+                .Select(path => path!.Value)
+                .ToList();
         }
-
-        return identifiers;
+        finally { tmb.Dispose(); }
     }
 
     private static byte[] ReadAllBytes(Stream stream)
@@ -313,49 +396,67 @@ public static class PapEditor
         return ms.ToArray();
     }
 
-    private static (byte[] Bytes, int AnimationCount, int PatchedTimelineEntries) PatchPap(byte[] papBytes, string eventIdentifier)
+    private static (byte[] Bytes, int AnimationCount, int PatchedTimelineEntries) PatchPap(
+        byte[] papBytes,
+        string eventIdentifier,
+        SourceAnimationSelection selection)
     {
         var sourceInspection = PapFileInspector.Inspect(papBytes);
+        ValidateSelection(sourceInspection, selection);
         var animationCount = sourceInspection.AnimationCount;
         var animationHeaderOffset = sourceInspection.AnimationHeaderOffset;
         var originalHkxOffset = sourceInspection.HavokOffset;
         var originalTmbOffset = sourceInspection.TimelineOffset;
 
         var animationHeaders = ReadAnimationHeaders(papBytes, animationHeaderOffset, animationCount);
-        WritePaddedString(animationHeaders[0], 0, PapAnimationNameSize, eventIdentifier);
+        var selectedHeader = animationHeaders[selection.AnimationHeaderIndex];
+        WritePaddedString(selectedHeader, 0, PapAnimationNameSize, eventIdentifier);
 
         var hkxData = new byte[originalTmbOffset - originalHkxOffset];
         Buffer.BlockCopy(papBytes, originalHkxOffset, hkxData, 0, hkxData.Length);
 
         var tmbOffsetMod = originalTmbOffset % 4;
         var tmbSections = ReadTmbSections(papBytes, originalTmbOffset, animationCount, tmbOffsetMod);
-        var patchedTmb = PatchTmb(tmbSections[0], eventIdentifier);
-        tmbSections[0] = patchedTmb.Bytes;
+        var patchedTmb = PatchTmb(tmbSections[selection.EmbeddedTmbIndex], eventIdentifier);
 
         using var output = new MemoryStream();
         using var writer = new BinaryWriter(output);
 
-        writer.Write(papBytes, 0, PapInfoOffsetPosition);
+        var preamble = papBytes[..PapInfoOffsetPosition];
+        BitConverter.GetBytes((short)1).CopyTo(preamble, 8);
+        writer.Write(preamble);
 
         var newAnimationHeaderOffset = PapHeaderSize;
-        var newHkxOffset = newAnimationHeaderOffset + animationHeaders.Sum(h => h.Length);
+        var newHkxOffset = newAnimationHeaderOffset + selectedHeader.Length;
         var newTmbOffset = newHkxOffset + hkxData.Length;
         writer.Write(newAnimationHeaderOffset);
         writer.Write(newHkxOffset);
         writer.Write(newTmbOffset);
 
-        foreach (var header in animationHeaders)
-            writer.Write(header);
+        writer.Write(selectedHeader);
 
         writer.Write(hkxData);
 
-        for (var i = 0; i < tmbSections.Count; i++)
+        writer.Write(patchedTmb.Bytes);
+
+        return (output.ToArray(), 1, patchedTmb.PatchedEntries);
+    }
+
+    private static void ValidateSelection(PapFileInspector.PapFileInspection inspection, SourceAnimationSelection selection)
+    {
+        if (selection.AnimationHeaderIndex < 0 || selection.AnimationHeaderIndex >= inspection.AnimationCount
+            || selection.EmbeddedTmbIndex < 0 || selection.EmbeddedTmbIndex >= inspection.TimelineSectionSizes.Count
+            || selection.EmbeddedTmbIndex != selection.AnimationHeaderIndex)
         {
-            writer.Write(tmbSections[i]);
-            WritePadding(writer, Padding(output.Position, i, tmbSections.Count, tmbOffsetMod));
+            throw new InvalidDataException("The selected source animation header and embedded timeline are not an unambiguous matching pair.");
         }
 
-        return (output.ToArray(), animationCount, patchedTmb.PatchedEntries);
+        if (!string.Equals(inspection.AnimationNames[selection.AnimationHeaderIndex], selection.AnimationEvent, StringComparison.OrdinalIgnoreCase)
+            || inspection.HavokIndices[selection.AnimationHeaderIndex] != selection.HavokMotionIndex
+            || selection.HavokMotionIndex < 0)
+        {
+            throw new InvalidDataException("The selected source animation no longer matches its verified header or Havok motion binding.");
+        }
     }
 
     private static List<byte[]> ReadAnimationHeaders(byte[] papBytes, int animationHeaderOffset, int animationCount)

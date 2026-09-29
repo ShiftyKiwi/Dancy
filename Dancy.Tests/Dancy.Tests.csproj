@@ -27,11 +27,13 @@
     <Compile Include="..\Dancy\Pap\PapStructuralModel.cs" Link="Pap\PapStructuralModel.cs" />
     <Compile Include="..\Dancy\Diagnostics\PenumbraAnimationCorpusIndexer.cs" Link="Diagnostics\PenumbraAnimationCorpusIndexer.cs" />
     <Compile Include="..\Dancy\Pap\PapCompatibilityPreflight.cs" Link="Pap\PapCompatibilityPreflight.cs" />
+    <Compile Include="..\Dancy\Pap\SourceAnimationSelection.cs" Link="Pap\SourceAnimationSelection.cs" />
     <Compile Include="..\Dancy\Pap\StandingIdleVariantCatalog.cs" Link="Pap\StandingIdleVariantCatalog.cs" />
     <Compile Include="..\Dancy\Services\PenumbraReloadResult.cs" Link="Services\PenumbraReloadResult.cs" />
     <Compile Include="..\Dancy\Models\ParsedEmoteOverride.cs" Link="Models\ParsedEmoteOverride.cs" />
     <Compile Include="..\Dancy\Models\PapSourceGroup.cs" Link="Models\PapSourceGroup.cs" />
     <Compile Include="..\Dancy\Models\RemappableOption.cs" Link="Models\RemappableOption.cs" />
+    <Compile Include="..\Dancy\Models\CompanionTimelineOverride.cs" Link="Models\CompanionTimelineOverride.cs" />
     <Compile Include="..\Dancy\Core\SourceSelectionPolicy.cs" Link="Core\SourceSelectionPolicy.cs" />
     <Compile Include="..\Dancy\Files\DancyFileManager.cs" Link="Files\DancyFileManager.cs" />
   </ItemGroup>
