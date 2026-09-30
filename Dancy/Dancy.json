@@ -12,17 +12,17 @@
         "early-access"
     ],
     "InternalName": "Dancy",
-    "AssemblyVersion": "0.3.1.0",
-    "TestingAssemblyVersion": "0.3.1.0",
+    "AssemblyVersion": "0.4.0.0",
+    "TestingAssemblyVersion": "0.4.0.0",
     "RepoUrl": "https://github.com/ShiftyKiwi/Dancy",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "TestingDalamudApiLevel": 15,
     "IsHide": "False",
     "IsTestingExclusive": "False",
-    "LastUpdate": 1790740674,
-    "DownloadLinkInstall": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.3.1/Dancy-0.3.1.zip",
-    "DownloadLinkUpdate": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.3.1/Dancy-0.3.1.zip",
-    "DownloadLinkTesting": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.3.1/Dancy-0.3.1.zip",
+    "LastUpdate": 1790782602,
+    "DownloadLinkInstall": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.4.0/Dancy-0.4.0.zip",
+    "DownloadLinkUpdate": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.4.0/Dancy-0.4.0.zip",
+    "DownloadLinkTesting": "https://github.com/ShiftyKiwi/Dancy/releases/download/v0.4.0/Dancy-0.4.0.zip",
     "IconUrl": "https://raw.githubusercontent.com/ShiftyKiwi/Dancy/master/dancy.png"
 }
