@@ -19,7 +19,13 @@ the original mod's options and files untouched.
    for a normal override by default. Paired options can be narrowed to one
    game path when only one side should change. An option backed by a shared
    animation bank is supported only when its companion timeline identifies one
-   source motion unambiguously; ambiguous banks remain unavailable.
+   source motion unambiguously; ambiguous banks remain unavailable. Step 2 can
+   also add an explicit logical race mapping that reuses one physical source
+   PAP. Physical-source choice is independent from which creator-provided
+   logical races are included in the override. These user-added mappings are
+   visibly distinct from creator mappings, are scoped to the current override
+   only, and still pass normal target and PAP preflight. Dancy never infers or
+   expands race compatibility automatically.
 3. Choose a target. The default `Looped Emotes` tab is for regular looping
    emotes. `Poses & Idles` contains persistent character states such as Standing
    Idle, chair sit, ground sit, sleep/lying, and supported Change Pose families.
@@ -69,7 +75,9 @@ contain local file paths.
 - Dancy is Early Access. Test an override on a copy of an important mod first.
 
 Dancy does not include animation retargeting, skeleton editing, or archived
-animation-transformation experiments.
+animation-transformation experiments. An additional compatible mapping changes
+only the logical game path that receives an existing physical source animation;
+it does not alter bones, tracks, transforms, keyframes, or skeletons.
 
 ## Development Validation
 

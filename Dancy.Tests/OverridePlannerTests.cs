@@ -225,9 +225,11 @@ public class OverridePlannerTests
         Assert.Equal(2, plan.PapCopies.Count);
         Assert.Equal(7, plan.PlannedMappings.Count);
         Assert.Equal("Push-ups -> Water · 7 paths", plan.DisplayName);
-        Assert.Equal(
-            "Dancy animation override\n\nSource:\nBench Press - /pushups\nOption: Enable\nAnimation: Push-ups (/pushups)\n\nTarget:\nWater (/water)\n\nApplies to:\nMidlander Male (c0101)\nMidlander Female (c0201)\nElezen Male (c0501)\nElezen Female (c0601)\nMiqo'te Female (c0801)\nRoegadyn Male (c0901)\nLalafell Male (c1101)\n\nTarget mappings:\n7",
-            plan.Description);
+        Assert.Contains("Source mappings:", plan.Description, StringComparison.Ordinal);
+        Assert.Contains("Source-provided mapping", plan.Description, StringComparison.Ordinal);
+        Assert.Contains("Elezen Male (c0501)", plan.Description, StringComparison.Ordinal);
+        Assert.Contains("Water (/water)", plan.Description, StringComparison.Ordinal);
+        Assert.Contains("Target mappings:\n7", plan.Description, StringComparison.Ordinal);
     }
 
     [Fact]

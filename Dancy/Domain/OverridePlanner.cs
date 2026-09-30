@@ -7,7 +7,15 @@ using Dancy.Core.Models;
 
 namespace Dancy.Domain;
 
-public sealed record OverridePlanSource(string GamePath, string SourcePapPath);
+public sealed record OverridePlanSource(
+    string GamePath,
+    string SourcePapPath,
+    SourceMappingOrigin MappingOrigin = SourceMappingOrigin.ModProvided,
+    string PhysicalSourceGamePath = "")
+{
+    public string EffectivePhysicalSourceGamePath
+        => string.IsNullOrWhiteSpace(PhysicalSourceGamePath) ? GamePath : PhysicalSourceGamePath;
+}
 
 public sealed class OverridePlanRequest
 {
@@ -40,6 +48,7 @@ public sealed class OverridePlan
     public string OverrideId { get; init; } = string.Empty;
     public string DisplayName { get; init; } = string.Empty;
     public string Description { get; init; } = string.Empty;
+    public IReadOnlyList<OverridePlanSource> SourceMappings { get; init; } = Array.Empty<OverridePlanSource>();
     public IReadOnlyList<PlannedPapCopy> PapCopies { get; init; } = Array.Empty<PlannedPapCopy>();
     public IReadOnlyDictionary<string, string> PlannedMappings { get; init; } = new Dictionary<string, string>();
     public IReadOnlyList<string> Warnings { get; init; } = Array.Empty<string>();
@@ -70,7 +79,7 @@ public static class OverridePlanner
 
         var overrideId = CreateStableId(request, sources);
         if (errors.Count > 0)
-            return CreateResult(request, overrideId, copies, mappings, warnings, errors);
+            return CreateResult(request, overrideId, sources, copies, mappings, warnings, errors);
 
         var sourceMatches = sources
             .Select(source => new SourceMatch(source, TargetPathMatcher.Match(source.GamePath, request.TargetGamePaths)))
@@ -128,12 +137,13 @@ public static class OverridePlanner
             });
         }
 
-        return CreateResult(request, overrideId, copies, mappings, warnings.Distinct(StringComparer.Ordinal).ToList(), errors.Distinct(StringComparer.Ordinal).ToList());
+        return CreateResult(request, overrideId, sources, copies, mappings, warnings.Distinct(StringComparer.Ordinal).ToList(), errors.Distinct(StringComparer.Ordinal).ToList());
     }
 
     private static OverridePlan CreateResult(
         OverridePlanRequest request,
         string overrideId,
+        IReadOnlyList<OverridePlanSource> sources,
         IReadOnlyList<PlannedPapCopy> copies,
         IReadOnlyDictionary<string, string> mappings,
         IReadOnlyList<string> warnings,
@@ -158,12 +168,14 @@ public static class OverridePlanner
         var appliesTo = affectedRigs.Count == 0
             ? "No known race-specific target variants"
             : string.Join("\n", affectedRigs);
+        var sourceMappingDescription = DescribeSourceMappings(sources);
 
         return new OverridePlan
         {
             OverrideId = overrideId,
             DisplayName = $"{sourceName} -> {request.TargetName} · {mappings.Count} path{(mappings.Count == 1 ? string.Empty : "s")}",
-            Description = $"Dancy animation override\n\nSource:\n{request.SourceGroupName}\nOption: {request.SourceOptionName}\nAnimation: {sourceAnimation}\n\nTarget:\n{target}\n\nApplies to:\n{appliesTo}\n\nTarget mappings:\n{mappings.Count}",
+            Description = $"Dancy animation override\n\nSource:\n{request.SourceGroupName}\nOption: {request.SourceOptionName}\nAnimation: {sourceAnimation}\n\nSource mappings:\n{sourceMappingDescription}\n\nTarget:\n{target}\n\nApplies to:\n{appliesTo}\n\nTarget mappings:\n{mappings.Count}",
+            SourceMappings = sources,
             PapCopies = copies,
             PlannedMappings = mappings,
             Warnings = warnings,
@@ -181,7 +193,13 @@ public static class OverridePlanner
         }.Select(GamePathIdentity.Normalize).Concat(sources
             .OrderBy(source => source.GamePath, StringComparer.OrdinalIgnoreCase)
             .ThenBy(source => source.SourcePapPath, StringComparer.OrdinalIgnoreCase)
-            .Select(source => $"{GamePathIdentity.Normalize(source.GamePath)}|{GamePathIdentity.Normalize(source.SourcePapPath)}"))
+            .Select(source => string.Join("|", new[]
+            {
+                GamePathIdentity.Normalize(source.GamePath),
+                GamePathIdentity.Normalize(source.SourcePapPath),
+                source.MappingOrigin.ToString(),
+                GamePathIdentity.Normalize(source.EffectivePhysicalSourceGamePath),
+            })))
             .Concat(request.CompanionTimelines
                 .OrderBy(timeline => timeline.GamePath, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(timeline => timeline.ModdedTimelinePath, StringComparer.OrdinalIgnoreCase)
@@ -195,6 +213,25 @@ public static class OverridePlanner
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(hash)[..12].ToLowerInvariant();
+    }
+
+    private static string DescribeSourceMappings(IReadOnlyList<OverridePlanSource> sources)
+    {
+        if (sources.Count == 0)
+            return "No source mapping available";
+
+        return string.Join("\n", sources
+            .OrderBy(source => source.GamePath, StringComparer.OrdinalIgnoreCase)
+            .Select(source =>
+            {
+                var logical = GamePathIdentity.Parse(source.GamePath).Character;
+                var physical = CharacterPathIdentity.FromGamePath(source.SourcePapPath);
+                if (!physical.IsKnown)
+                    physical = GamePathIdentity.Parse(source.EffectivePhysicalSourceGamePath).Character;
+                var logicalLabel = logical.IsKnown ? logical.DisplayName : source.GamePath;
+                var physicalLabel = physical.IsKnown ? physical.DisplayName : source.SourcePapPath;
+                return $"{logicalLabel}: {source.MappingOrigin.DisplayName()}; physical source {physicalLabel}";
+            }));
     }
 
     private static TargetMatchResult RestrictFallbackToUnclaimedTargets(TargetMatchResult result, ISet<string> explicitlyClaimedTargets)

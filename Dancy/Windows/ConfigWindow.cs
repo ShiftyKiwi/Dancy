@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(420, 640);
+        Size = new Vector2(420, 670);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -79,6 +79,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterTreadmillSelectorRegressionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (ranTreadmillSelectorRegression)
             plugin.AgentBridge.StartTreadmillSelectorRegression();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var ranUserAddedMappingRegression = ImGui.Button("Run user-added c0501 Treadmill to Water regression");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterUserAddedCompatibleMappingRegressionControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (ranUserAddedMappingRegression)
+            plugin.AgentBridge.StartUserAddedCompatibleMappingRegression();
 
         if (!canRunSelfTest)
             ImGui.BeginDisabled();

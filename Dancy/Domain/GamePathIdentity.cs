@@ -54,6 +54,48 @@ public sealed class GamePathIdentity
     public static string Normalize(string? path)
         => (path ?? string.Empty).Replace('\\', '/').Trim().TrimStart('/').ToLowerInvariant();
 
+    public static bool TryReplaceCharacter(
+        string sourcePath,
+        CharacterPathIdentity replacement,
+        out string replacedPath,
+        out string error)
+    {
+        replacedPath = string.Empty;
+        error = string.Empty;
+        if (!replacement.IsKnown)
+        {
+            error = "The requested logical race identity is unknown.";
+            return false;
+        }
+
+        var source = Parse(sourcePath);
+        if (!source.Character.IsKnown)
+        {
+            error = "Dancy could not determine a race identity from the selected source path.";
+            return false;
+        }
+
+        var segments = source.NormalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var index = Array.FindIndex(segments, segment => string.Equals(segment, source.Character.Code, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+        {
+            error = "Dancy could not form a logical race path from the selected source path.";
+            return false;
+        }
+
+        segments[index] = replacement.Code;
+        replacedPath = string.Join('/', segments);
+        var result = Parse(replacedPath);
+        if (!string.Equals(result.Character.Code, replacement.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            replacedPath = string.Empty;
+            error = "Dancy could not verify the requested logical race path.";
+            return false;
+        }
+
+        return true;
+    }
+
     private static bool IsAnimationLayer(string segment)
         => segment.Length == 5
            && segment[0] is 'a' or 'A'

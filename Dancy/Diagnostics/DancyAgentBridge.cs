@@ -19,6 +19,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string SelfTestControlId = "dancy.debug.run-selftest";
     private const string PushupsWaterRegressionControlId = "dancy.debug.run-pushups-water-regression";
     private const string TreadmillSelectorRegressionControlId = "dancy.debug.run-treadmill-selector-regression";
+    private const string UserAddedCompatibleMappingRegressionControlId = "dancy.debug.run-user-added-compatible-mapping-regression";
     private const string TargetCatalogInspectionControlId = "dancy.debug.inspect-target-catalog";
     private const string MultiSectionResearchControlId = "dancy.debug.inspect-multisection-paps";
     private const string CorpusResearchControlId = "dancy.debug.index-animation-corpus";
@@ -38,6 +39,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastSelfTest;
     private DancySelfTestResult? lastPushupsWaterRegression;
     private DancySelfTestResult? lastTreadmillSelectorRegression;
+    private DancySelfTestResult? lastUserAddedCompatibleMappingRegression;
     private DancySelfTestResult? lastTargetCatalogInspection;
     private DancySelfTestResult? lastMultiSectionResearch;
     private DancySelfTestResult? lastCorpusResearch;
@@ -147,6 +149,24 @@ internal sealed class DancyAgentBridge : IDisposable
             mutating: true,
             completionOperationKind: "dancy.debug.treadmill-selector-regression",
             _ => StartTreadmillSelectorRegression());
+    }
+
+    public void RegisterUserAddedCompatibleMappingRegressionControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            UserAddedCompatibleMappingRegressionControlId,
+            "Run user-added c0501 Treadmill to Water regression",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastUserAddedCompatibleMappingRegression?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: true,
+            completionOperationKind: "dancy.debug.user-added-compatible-mapping-regression",
+            _ => StartUserAddedCompatibleMappingRegression());
     }
 
     public void RegisterTargetCatalogInspectionControl(Vector2 min, Vector2 max, bool enabled)
@@ -414,6 +434,47 @@ internal sealed class DancyAgentBridge : IDisposable
         });
 
         return AgentBridgeUiActionResult.Ok("Treadmill selector production regression started. It will create, resolve, trigger through Conduit, and remove only its test override.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartUserAddedCompatibleMappingRegression()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.user-added-compatible-mapping-regression", "User-added c0501 Treadmill to Water regression queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Dancy is validating the user-added c0501 Treadmill mapping.");
+                var result = new DancyTreadmillSelectorRegressionRunner().RunUserAddedC0501WaterRegression();
+                lastUserAddedCompatibleMappingRegression = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "User-added compatible mapping regression reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "UserAddedCompatibleMappingRegressionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["dancyTestOptionCleaned"] = result.Passed ? "true" : "unknown",
+                        ["conduitTrigger"] = result.Passed ? "completed" : "unknown",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] User-added compatible mapping regression crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledUserAddedCompatibleMappingRegressionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("User-added c0501 Treadmill regression started. It will clean up only its generated Dancy option.", operation.Id);
     }
 
     public AgentBridgeUiActionResult StartTargetCatalogInspection()
@@ -791,6 +852,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.selftest"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.pushups-water-regression"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.treadmill-selector-regression"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.user-added-compatible-mapping-regression"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.target-catalog"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.multisection-pap-research"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.animation-corpus-research"),
@@ -813,6 +875,7 @@ internal sealed class DancyAgentBridge : IDisposable
         selfTest = lastSelfTest,
         pushupsWaterRegression = lastPushupsWaterRegression,
         treadmillSelectorRegression = lastTreadmillSelectorRegression,
+        userAddedCompatibleMappingRegression = lastUserAddedCompatibleMappingRegression,
         targetCatalogInspection = lastTargetCatalogInspection,
         multiSectionPapResearch = lastMultiSectionResearch,
         animationCorpusResearch = lastCorpusResearch,

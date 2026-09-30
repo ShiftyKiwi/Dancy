@@ -54,6 +54,9 @@ namespace Dancy.Windows
         private List<RemappableOption> remappableOptions = new();
         private RemappableOption? selectedOption = null;
         private readonly HashSet<string> selectedSourceGamePaths = new(StringComparer.OrdinalIgnoreCase);
+        private readonly AdditionalCompatibleMappingSet additionalCompatibleMappings = new();
+        private string? selectedCompatiblePhysicalSourceKey;
+        private string? additionalMappingError;
         private readonly Dictionary<string, IReadOnlyList<string>> targetPathsById = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TargetPapStatus> targetPapStatusById = new(StringComparer.OrdinalIgnoreCase);
 
@@ -83,6 +86,8 @@ namespace Dancy.Windows
             string Target,
             string Type,
             string Context,
+            string SourceMapping,
+            string SourceMappingDetails,
             bool IsLegacy);
 
         private sealed record SourceSelectionPreview(
@@ -157,6 +162,9 @@ namespace Dancy.Windows
             remappableOptions.Clear();
             selectedOption = null;
             selectedSourceGamePaths.Clear();
+            additionalCompatibleMappings.Clear();
+            selectedCompatiblePhysicalSourceKey = null;
+            additionalMappingError = null;
             selectedReplacementEmote = null;
             previewPlan = null;
             previewCompatibility = null;
@@ -464,6 +472,9 @@ namespace Dancy.Windows
                         remappableOptions.Clear();
                         selectedOption = null;
                         selectedSourceGamePaths.Clear();
+                        additionalCompatibleMappings.Clear();
+                        selectedCompatiblePhysicalSourceKey = null;
+                        additionalMappingError = null;
                         selectedReplacementEmote = null;
                         previewPlan = null;
                         previewCompatibility = null;
@@ -542,6 +553,9 @@ namespace Dancy.Windows
                         ImGui.TextUnformatted(summary.Source);
                         if (!string.IsNullOrWhiteSpace(summary.Option))
                             ImGui.TextDisabled(summary.Option);
+                        ImGui.TextDisabled(summary.SourceMapping);
+                        if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(summary.SourceMappingDetails))
+                            ImGui.SetTooltip(summary.SourceMappingDetails);
 
                         ImGui.TableNextColumn();
                         ImGui.TextUnformatted(summary.Target);
@@ -687,8 +701,11 @@ namespace Dancy.Windows
             var starts = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Start));
             var ends = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.End));
             var unknown = SourceSelectionPolicy.OrderForDisplay(selected.Entries.Where(entry => entry.AppliesTo.Phase == AnimationPhase.Unknown));
-            var selectedLoopCount = GetSelectedSourceEntries(selected).Count;
-            ImGui.Text($"{selectedLoopCount} / {loops.Count} Loop sources selected");
+            var selectedProvidedEntries = GetSelectedModProvidedSourceEntries(selected);
+            var selectedLoopCount = selectedProvidedEntries.Count;
+            ImGui.Text($"{selectedLoopCount} / {loops.Count} source-provided Loop paths selected");
+            if (additionalCompatibleMappings.Values.Count > 0)
+                ImGui.TextDisabled($"{additionalCompatibleMappings.Values.Count} user-added compatible mapping{(additionalCompatibleMappings.Values.Count == 1 ? string.Empty : "s")} selected");
             if (starts.Count > 0)
                 ImGui.TextDisabled($"{starts.Count} start / transition path{(starts.Count == 1 ? string.Empty : "s")} shown for context");
             if (ends.Count > 0 || unknown.Count > 0)
@@ -720,7 +737,8 @@ namespace Dancy.Windows
                 }
             }
 
-            DrawSourcePathSection("Loop sources", loops, selectable: true, defaultOpen: true);
+            DrawSourcePathSection("Source-provided Loop sources", loops, selectable: true, defaultOpen: true);
+            DrawAdditionalCompatibleMappings(selected);
             DrawSourcePathSection("Start / transition", starts, selectable: false, defaultOpen: false);
             DrawSourcePathSection("End / other", ends, selectable: false, defaultOpen: false);
             DrawSourcePathSection("Unknown", unknown, selectable: false, defaultOpen: false);
@@ -760,11 +778,12 @@ namespace Dancy.Windows
                 return;
 
             var tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
-            if (ImGui.BeginTable($"DancySourcePaths_{label}", 4, tableFlags))
+            if (ImGui.BeginTable($"DancySourcePaths_{label}", 5, tableFlags))
             {
                 ImGui.TableSetupColumn("Use", ImGuiTableColumnFlags.WidthFixed, selectable ? 106f : 72f);
-                ImGui.TableSetupColumn("Target variant");
-                ImGui.TableSetupColumn("Source file");
+                ImGui.TableSetupColumn("Logical race");
+                ImGui.TableSetupColumn("Physical source");
+                ImGui.TableSetupColumn("Mapping", ImGuiTableColumnFlags.WidthFixed, 148f);
                 ImGui.TableSetupColumn("Copy", ImGuiTableColumnFlags.WidthFixed, 48f);
                 ImGui.TableHeadersRow();
 
@@ -803,7 +822,9 @@ namespace Dancy.Windows
                     ImGui.TextUnformatted(entry.AppliesTo.Character.DisplayName);
                     ImGui.TableNextColumn();
                     ImGui.TextUnformatted(Path.GetFileName(entry.ModdedPapPath));
-                    ImGui.TextDisabled(entry.PapOrigin.IsKnown ? entry.PapOrigin.DisplayName : "Mod-relative file");
+                    ImGui.TextDisabled(entry.PhysicalSourceOrigin.IsKnown ? entry.PhysicalSourceOrigin.DisplayName : "Mod-relative file");
+                    ImGui.TableNextColumn();
+                    ImGui.TextDisabled(entry.MappingOrigin.DisplayName());
                     ImGui.TableNextColumn();
                     using (ImRaii.PushFont(UiBuilder.IconFont))
                     {
@@ -813,7 +834,7 @@ namespace Dancy.Windows
                     if (ImGui.IsItemHovered())
                     {
                         ImGui.SetTooltip(
-                            $"Phase: {entry.AppliesTo.Phase}\n\nGame path:\n{entry.GamePath}\n\nModded PAP path:\n{entry.ModdedPapPath}\n\nCopy both paths.");
+                            $"Phase: {entry.AppliesTo.Phase}\nMapping: {entry.MappingOrigin.DisplayName()}\n\nLogical game path:\n{entry.GamePath}\n\nPhysical source PAP:\n{entry.ModdedPapPath}\n\nCopy both paths.");
                     }
                     ImGui.PopID();
                 }
@@ -822,6 +843,153 @@ namespace Dancy.Windows
             }
 
             ImGui.TreePop();
+        }
+
+        private void DrawAdditionalCompatibleMappings(RemappableOption source)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.85f, 0.9f, 1f, 1f), "Additional compatible mappings");
+            ImGui.TextDisabled("Explicit user-selected logical paths. Dancy does not infer race compatibility or retarget animation content.");
+
+            var physicalCandidates = AdditionalCompatiblePhysicalSources.Discover(source.LoopEntries);
+            var hasPhysicalSource = AdditionalCompatiblePhysicalSources.TryResolve(
+                physicalCandidates,
+                selectedCompatiblePhysicalSourceKey,
+                out var physicalCandidate,
+                out var physicalSourceError);
+            if (physicalCandidates.Count == 1)
+            {
+                selectedCompatiblePhysicalSourceKey = physicalCandidate!.Key;
+                ImGui.TextDisabled($"Physical source inferred: {physicalCandidate.DisplayName}");
+            }
+            else if (physicalCandidates.Count > 1)
+            {
+                ImGui.PushItemWidth(330f);
+                var physicalLabel = physicalCandidate?.DisplayName ?? "Choose physical source";
+                if (ImGui.BeginCombo("Use physical source", physicalLabel))
+                {
+                    foreach (var candidate in physicalCandidates)
+                    {
+                        var isSelected = string.Equals(candidate.Key, selectedCompatiblePhysicalSourceKey, StringComparison.OrdinalIgnoreCase);
+                        if (ImGui.Selectable(candidate.DisplayName, isSelected))
+                        {
+                            selectedCompatiblePhysicalSourceKey = candidate.Key;
+                            additionalMappingError = null;
+                            hasPhysicalSource = AdditionalCompatiblePhysicalSources.TryResolve(
+                                physicalCandidates,
+                                selectedCompatiblePhysicalSourceKey,
+                                out physicalCandidate,
+                                out physicalSourceError);
+                        }
+                        if (isSelected)
+                            ImGui.SetItemDefaultFocus();
+                    }
+                    ImGui.EndCombo();
+                }
+
+                ImGui.PopItemWidth();
+                if (!hasPhysicalSource)
+                    ImGui.TextDisabled(physicalSourceError);
+            }
+            else
+            {
+                selectedCompatiblePhysicalSourceKey = null;
+                ImGui.TextDisabled(physicalSourceError);
+            }
+
+            var representedCodes = source.Entries
+                    .Concat(additionalCompatibleMappings.Values)
+                    .Select(entry => entry.AppliesTo.Character.Code)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var candidates = CharacterPathIdentity.PlayableIdentities
+                .Where(identity => !representedCodes.Contains(identity.Code))
+                .ToList();
+            ImGui.BeginDisabled(!hasPhysicalSource);
+            if (ImGui.BeginCombo("+ Add race", "Add race"))
+            {
+                foreach (var candidate in candidates)
+                {
+                    if (!ImGui.Selectable(candidate.DisplayName))
+                        continue;
+
+                    if (additionalCompatibleMappings.TryAdd(physicalCandidate!.Source, candidate, source.Entries, out _, out var error))
+                    {
+                        additionalMappingError = null;
+                        previewPlan = null;
+                        previewCompatibility = null;
+                    }
+                    else
+                    {
+                        additionalMappingError = error;
+                    }
+                }
+                ImGui.EndCombo();
+            }
+            ImGui.EndDisabled();
+
+            if (candidates.Count == 0)
+                ImGui.TextDisabled("All playable logical race identities are already represented by this source option.");
+
+            if (!string.IsNullOrWhiteSpace(additionalMappingError))
+            {
+                ImGui.PushStyleColor(ImGuiCol.Text, ErrorTextColor);
+                ImGui.TextWrapped(additionalMappingError);
+                ImGui.PopStyleColor();
+            }
+
+            var mappings = additionalCompatibleMappings.Values;
+            if (mappings.Count == 0)
+                return;
+
+            var tableFlags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerV | ImGuiTableFlags.SizingStretchProp;
+            if (ImGui.BeginTable("DancyAdditionalCompatibleMappings", 4, tableFlags))
+            {
+                ImGui.TableSetupColumn("Logical race");
+                ImGui.TableSetupColumn("Mapping", ImGuiTableColumnFlags.WidthFixed, 180f);
+                ImGui.TableSetupColumn("Uses source");
+                ImGui.TableSetupColumn("Action", ImGuiTableColumnFlags.WidthFixed, 66f);
+                ImGui.TableHeadersRow();
+
+                foreach (var mapping in mappings)
+                {
+                    ImGui.PushID(mapping.GamePath);
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(mapping.AppliesTo.Character.DisplayName);
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted("User-added mapping");
+                    ImGui.TextDisabled("Target preflight pending");
+                    ImGui.TableNextColumn();
+                    ImGui.TextUnformatted(mapping.PhysicalSourceOrigin.IsKnown
+                        ? mapping.PhysicalSourceOrigin.DisplayName
+                        : mapping.ModdedPapPath);
+                    ImGui.TableNextColumn();
+                    if (ImGui.SmallButton("Remove"))
+                    {
+                        additionalCompatibleMappings.Remove(mapping.GamePath);
+                        previewPlan = null;
+                        previewCompatibility = null;
+                    }
+                    if (ImGui.IsItemHovered())
+                        ImGui.SetTooltip("Remove this user-added logical mapping");
+                    ImGui.PopID();
+                }
+
+                ImGui.EndTable();
+            }
+
+            if (ImGui.TreeNode("Additional mapping details"))
+            {
+                foreach (var mapping in mappings)
+                {
+                    ImGui.TextWrapped($"Logical path: {mapping.GamePath}");
+                    ImGui.TextWrapped($"Physical source: {mapping.ModdedPapPath}");
+                    ImGui.TextUnformatted($"Mapping origin: {mapping.MappingOrigin.DisplayName()}");
+                    ImGui.Spacing();
+                }
+                ImGui.TreePop();
+            }
         }
 
         // ======================================
@@ -1104,6 +1272,9 @@ namespace Dancy.Windows
         private void ResetSelectedSourceGamePaths(RemappableOption source)
         {
             selectedSourceGamePaths.Clear();
+            additionalCompatibleMappings.Clear();
+            selectedCompatiblePhysicalSourceKey = null;
+            additionalMappingError = null;
             foreach (var entry in source.LoopEntries)
                 selectedSourceGamePaths.Add(entry.GamePath);
         }
@@ -1116,10 +1287,18 @@ namespace Dancy.Windows
 
             if (selectedSourceGamePaths.Count == 0 && source.LoopEntries.Count == 1)
                 selectedSourceGamePaths.Add(source.LoopEntries[0].GamePath);
+
         }
 
-        private List<ParsedEmoteOverride> GetSelectedSourceEntries(RemappableOption source)
+        private List<ParsedEmoteOverride> GetSelectedModProvidedSourceEntries(RemappableOption source)
             => SourceSelectionPolicy.SelectedLoopEntries(source.Entries, selectedSourceGamePaths).ToList();
+
+        private List<ParsedEmoteOverride> GetSelectedSourceEntries(RemappableOption source)
+            => GetSelectedModProvidedSourceEntries(source)
+                .Concat(additionalCompatibleMappings.Values)
+                .OrderBy(entry => entry.AppliesTo.Character.Code, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(entry => entry.GamePath, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
         private OverridePlan CreatePreviewPlan(
             RemappableOption source,
@@ -1140,7 +1319,11 @@ namespace Dancy.Windows
                 TargetName = target.Name,
                 TargetCommand = target.Command,
                 Sources = sourceEntries
-                    .Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath))
+                    .Select(entry => new OverridePlanSource(
+                        entry.GamePath,
+                        entry.ModdedPapPath,
+                        entry.MappingOrigin,
+                        entry.PhysicalSourceGamePath))
                     .ToList(),
                 CompanionTimelines = source.CompanionTimelines,
                 TargetGamePaths = targetPaths,
@@ -1299,6 +1482,7 @@ namespace Dancy.Windows
                 DrawSummaryRow("Target", target.Name);
                 DrawSummaryRow("Affected", $"{plan.PlannedMappings.Count} target path{(plan.PlannedMappings.Count == 1 ? string.Empty : "s")}");
                 DrawSummaryRow("PAP origin", DescribePapOrigins(selectedSources));
+                DrawSummaryRow("Source mappings", DescribeMappingOrigins(plan.SourceMappings));
                 DrawSummaryRow("Strategy", DescribeMappingStrategy(compatibility.WriteStrategy));
                 DrawSummaryRow("Compatibility", DescribeCompatibility(compatibility));
                 ImGui.EndTable();
@@ -1306,6 +1490,12 @@ namespace Dancy.Windows
 
             if (ImGui.TreeNode("Technical mapping details"))
             {
+                foreach (var mapping in plan.SourceMappings)
+                {
+                    ImGui.TextWrapped($"Logical source: {mapping.GamePath}");
+                    ImGui.TextWrapped($"Physical source: {mapping.SourcePapPath}");
+                    ImGui.TextWrapped($"Mapping origin: {mapping.MappingOrigin.DisplayName()}");
+                }
                 foreach (var copy in plan.PapCopies)
                 {
                     var strategies = string.Join(", ", copy.MatchResults
@@ -1422,6 +1612,20 @@ namespace Dancy.Windows
             };
         }
 
+        private static string DescribeMappingOrigins(IReadOnlyList<OverridePlanSource> sources)
+        {
+            var origins = sources
+                .Select(source => source.MappingOrigin.DisplayName())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return origins.Count switch
+            {
+                0 => "Not available",
+                1 => origins[0],
+                _ => "Mixed source mappings",
+            };
+        }
+
         private static void DrawSummaryRow(string label, string value)
         {
             ImGui.TableNextRow();
@@ -1501,7 +1705,35 @@ namespace Dancy.Windows
                 target,
                 targetModel is null ? "Dancy override" : TargetSemantics.DisplayName(targetModel.Behavior),
                 targetModel is null ? "Details unavailable" : TargetSemantics.DisplayName(targetModel.Context),
+                DescribeExistingMappingOrigin(existing.Description),
+                DescribeExistingMappingDetails(existing.Description),
                 legacy);
+        }
+
+        private static string DescribeExistingMappingOrigin(string description)
+        {
+            var details = DescribeExistingMappingDetails(description);
+            var hasUserAdded = details.Contains("User-added compatible mapping", StringComparison.OrdinalIgnoreCase);
+            var hasSourceProvided = details.Contains("Source-provided mapping", StringComparison.OrdinalIgnoreCase);
+            if (hasUserAdded && hasSourceProvided)
+                return "Mixed source mappings";
+            if (hasUserAdded)
+                return "User-added compatible mapping";
+            if (hasSourceProvided)
+                return "Source-provided mapping";
+            return "Mapping details unavailable";
+        }
+
+        private static string DescribeExistingMappingDetails(string description)
+        {
+            const string marker = "Source mappings:\n";
+            var start = description.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (start < 0)
+                return string.Empty;
+
+            start += marker.Length;
+            var end = description.IndexOf("\n\nTarget:", start, StringComparison.OrdinalIgnoreCase);
+            return (end < 0 ? description[start..] : description[start..end]).Trim();
         }
 
         private static string DescriptionValue(string description, string label)
@@ -1522,6 +1754,9 @@ namespace Dancy.Windows
             details.AppendLine($"Target: {summary.Target}");
             details.AppendLine($"Type: {summary.Type}");
             details.AppendLine($"Context: {summary.Context}");
+            details.AppendLine($"Source mapping: {summary.SourceMapping}");
+            if (!string.IsNullOrWhiteSpace(summary.SourceMappingDetails))
+                details.AppendLine($"Source mapping details: {summary.SourceMappingDetails}");
             details.AppendLine($"Affected: {existing.Mappings.Count} target path{(existing.Mappings.Count == 1 ? string.Empty : "s")}");
             details.AppendLine();
             details.AppendLine("Mappings:");
@@ -1596,6 +1831,10 @@ namespace Dancy.Windows
             diagnostics.AppendLine($"Override: {plan.OverrideId}");
             diagnostics.AppendLine($"Source: ({source.GroupName}) {source.OptionName}");
             diagnostics.AppendLine($"Target: {target.Name} ({target.Command}) [{target.PrimaryTimelineKey}]");
+            foreach (var mapping in plan.SourceMappings)
+            {
+                diagnostics.AppendLine($"Source mapping: {mapping.MappingOrigin.DisplayName()}; logical {mapping.GamePath}; physical {mapping.SourcePapPath}");
+            }
             diagnostics.AppendLine($"Metadata: {write.Format} ({Path.GetFileName(write.MetadataPath)})");
             diagnostics.AppendLine($"Penumbra reload: {reload.UserFacingOutcome}");
 

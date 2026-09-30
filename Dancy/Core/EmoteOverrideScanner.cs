@@ -205,6 +205,7 @@ public static class EmoteOverrideScanner
             OptionName = optionName,
             GamePath = gamePath,
             ModdedPapPath = papPath,
+            PhysicalSourceGamePath = gamePath,
             EmoteName = emote?.Name ?? fallbackName,
             EmoteCommand = emote?.Command ?? string.Empty,
             EmoteRowId = emote?.RowId ?? 0

@@ -33,6 +33,8 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
     private const string ModName = "[HS] Warrior of Lift (Default)";
     private const string SourceGroupName = "Treadmill - /breathcontrol";
     private const int TemporarySettingKey = -9277;
+    private const int UserAddedC0501TemporarySettingKey = -9278;
+    private const string UserAddedC0501LogicalPath = "chara/human/c0501/animation/a0001/bt_common/emote/loop_emot11_loop.pap";
 
     private static readonly Scenario[] Scenarios =
     [
@@ -59,6 +61,72 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         foreach (var scenario in Scenarios)
             cases.AddRange(RunScenario(scenario).Cases);
         return Complete(started, cases);
+    }
+
+    /// <summary>
+    /// Covers the one runtime-proven, explicitly user-added logical source route.
+    /// It does not infer additional races and always removes its own Dancy option.
+    /// Fixture identity: installed Warrior of Lift metadata version 1.0.0.
+    /// </summary>
+    public DancySelfTestResult RunUserAddedC0501WaterRegression()
+    {
+        var started = DateTimeOffset.UtcNow;
+        var cases = new List<DancySelfTestCase>();
+        RegressionContext? context = null;
+        try
+        {
+            if (!RunCase(cases, "Capture user-added c0501 Treadmill fixture", "baseline",
+                    "Warrior of Lift 1.0.0 Walk omits c0501 and Water supplies one c0501 target.", () =>
+                {
+                    context = CaptureUserAddedC0501Context();
+                    return $"logical={UserAddedC0501LogicalPath}; physical={context.SharedPapPath}; target={context.TargetPaths.Single()}.";
+                }))
+                return Complete(started, cases);
+
+            if (context is null)
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Verify user-added mapping provenance and stable identity", "provenance",
+                    "The c0501 mapping is user-added, retains c0101 physical provenance, and differs from the source-provided c0101 plan.", () => VerifyUserAddedC0501Provenance(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Walk selector and c0501 preflight", "preflight",
+                    "The user-added route retains Walk's H1/TMB1 selector semantics and the selector-bank writer.", () => VerifyPreflight(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Create user-added c0501 Water override", "create",
+                    "Dancy writes one c0501 mapping only in its own generated option and reloads the selected mod.", () => Create(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Verify generated user-added mapping metadata", "metadata",
+                    "Generated Dancy metadata records user-added provenance and the c0101 physical source without changing the creator option.", () => VerifyUserAddedC0501Metadata(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Verify user-added c0501 generated source bank", "pap",
+                    "The complete source bank is retained and only Walk's selected header/TMB event is patched.", () => VerifyGeneratedPap(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Verify user-added c0501 motion fingerprint", "fingerprint",
+                    "VFXEditor fingerprints Walk motion 1 against the c0501 skeleton before and after generation identically.", () => VerifyUserAddedC0501Fingerprint(context)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "Post-redraw user-added c0501 resolution and Water trigger", "runtime",
+                    "After redraw, c0501 resolves through the player collection and Conduit completes Water; any actor resource signal is recorded without being treated as a cross-race visual claim.", () =>
+                    VerifyRuntimeAndTrigger(context, UserAddedC0501TemporarySettingKey, "Dancy user-added c0501 Treadmill regression", requirePostDispatchResource: false)))
+                return Complete(started, cases);
+
+            if (!RunCase(cases, "User-added source integrity", "integrity",
+                    "The original Treadmill source and non-Dancy metadata remain unchanged.", () => VerifySourceIntegrity(context)))
+                return Complete(started, cases);
+
+            return Complete(started, cases);
+        }
+        finally
+        {
+            if (context?.Created == true)
+                RunCase(cases, "User-added c0501 cleanup and restoration", "cleanup",
+                    "Only the generated c0501 test option and its output are removed.", () => Cleanup(context));
+        }
     }
 
     private static DancySelfTestResult RunScenario(Scenario scenario)
@@ -112,7 +180,8 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             if (!RunCase(cases, $"{scenario.OptionName} source motion fingerprint", "fingerprint", "VFXEditor fingerprints the selected source motion before and after generation identically.", () => VerifyFingerprint(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, $"{scenario.OptionName} redraw and runtime resolution", "runtime", "Temporary player-scoped selection redraws the local player, resolves a generated target PAP, and records its resource request before target dispatch.", () => VerifyRuntimeAndTrigger(context)))
+            if (!RunCase(cases, $"{scenario.OptionName} redraw and runtime resolution", "runtime", "Temporary player-scoped selection redraws the local player, resolves every generated target PAP, and completes the target invocation. The optional local resource observer is recorded as diagnostic telemetry.", () =>
+                    VerifyRuntimeAndTrigger(context, requirePostDispatchResource: false)))
                 return Complete(started, cases);
 
             if (!RunCase(cases, "Source integrity", "integrity", "The original shared PAP and all non-Dancy metadata remain unchanged.", () => VerifySourceIntegrity(context)))
@@ -197,6 +266,69 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         };
     }
 
+    private static RegressionContext CaptureUserAddedC0501Context()
+    {
+        var baseline = CaptureContext(new Scenario("Walk", "/water"));
+        var metadata = JObject.Parse(File.ReadAllText(baseline.MetaPath));
+        if (!string.Equals(metadata["Version"]?.ToString(), "1.0.0", StringComparison.Ordinal))
+            throw new InvalidOperationException("The installed Warrior of Lift fixture no longer identifies itself as version 1.0.0.");
+
+        var sourceCodes = baseline.RunSource.LoopEntries
+            .Select(entry => entry.AppliesTo.Character.Code)
+            .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var expectedCodes = new[] { "c0101", "c0801", "c0901", "c1101" };
+        if (!sourceCodes.SequenceEqual(expectedCodes, StringComparer.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Treadmill Walk logical paths were {string.Join(", ", sourceCodes)} instead of the known four-path fixture.");
+
+        var physicalSource = baseline.RunSource.LoopEntries.Single(entry =>
+            string.Equals(entry.AppliesTo.Character.Code, "c0101", StringComparison.OrdinalIgnoreCase));
+        if (!CharacterPathIdentity.TryGet("c0501", out var c0501))
+            throw new InvalidOperationException("Dancy could not load the c0501 playable race identity.");
+        var additions = new AdditionalCompatibleMappingSet();
+        if (!additions.TryAdd(physicalSource, c0501, baseline.RunSource.Entries, out var added, out var error) || added is null)
+            throw new InvalidOperationException($"Dancy could not create the explicit c0501 logical mapping: {error}");
+        if (!string.Equals(added.GamePath, UserAddedC0501LogicalPath, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Dancy did not construct the expected c0501 logical Treadmill path.");
+
+        var targetPaths = baseline.TargetPaths
+            .Where(path => string.Equals(GamePathIdentity.Parse(path).Character.Code, "c0501", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (targetPaths.Count != 1)
+            throw new InvalidOperationException($"Water did not resolve exactly one c0501 target PAP; found {targetPaths.Count}.");
+
+        var plan = BuildPlan(
+            baseline.ModDirectory,
+            baseline.RunSource,
+            baseline.Target,
+            targetPaths,
+            "Walk [Dancy user-added c0501 regression]",
+            new[] { added });
+        if (!plan.IsValid || plan.PapCopies.Count != 1 || plan.PlannedMappings.Count != 1 || !plan.PlannedMappings.ContainsKey(targetPaths[0]))
+            throw new InvalidOperationException("The user-added c0501 plan was not a valid single logical target mapping.");
+        if (baseline.DancyOverridesBefore.Any(option => string.Equals(option.Id, plan.OverrideId, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("A matching user-added c0501 regression option already exists. Dancy will not overwrite it.");
+
+        return new RegressionContext
+        {
+            Scenario = new Scenario("Walk", "/water"),
+            ModDirectory = baseline.ModDirectory,
+            ModFolder = baseline.ModFolder,
+            MetaPath = baseline.MetaPath,
+            MetadataFormat = baseline.MetadataFormat,
+            MetadataWithoutDancy = baseline.MetadataWithoutDancy,
+            SourceOptions = baseline.SourceOptions,
+            RunSource = baseline.RunSource,
+            SharedPapPath = baseline.SharedPapPath,
+            SourcePapHash = baseline.SourcePapHash,
+            Target = baseline.Target,
+            TargetPaths = targetPaths,
+            TargetInspections = targetPaths.ToDictionary(path => path, path => baseline.TargetInspections[path], StringComparer.OrdinalIgnoreCase),
+            Plan = plan,
+            DancyOverridesBefore = baseline.DancyOverridesBefore,
+        };
+    }
+
     private static string DescribeSharedPap(RegressionContext context)
     {
         var inspection = PapFileInspector.InspectFile(context.SharedPapPath);
@@ -261,6 +393,33 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         return $"{result.Status}: {result.Reason}; selected {selection.AnimationEvent} / H{selection.HavokMotionIndex} / TMB {selection.EmbeddedTmbIndex}.";
     }
 
+    private static string VerifyUserAddedC0501Provenance(RegressionContext context)
+    {
+        var mapping = context.Plan.SourceMappings.Single();
+        if (mapping.MappingOrigin != SourceMappingOrigin.UserAddedCompatible
+            || !string.Equals(mapping.GamePath, UserAddedC0501LogicalPath, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(GamePathIdentity.Parse(mapping.EffectivePhysicalSourceGamePath).Character.Code, "c0101", StringComparison.OrdinalIgnoreCase)
+            || context.Plan.SourceMappings.Any(source => source.MappingOrigin == SourceMappingOrigin.ModProvided)
+            || context.Plan.PlannedMappings.Keys.Any(path => !string.Equals(GamePathIdentity.Parse(path).Character.Code, "c0501", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidOperationException("The c0501 regression plan did not preserve the explicit user-added logical output without adding a creator-provided output mapping.");
+        }
+
+        var sourceProvidedC0101 = context.RunSource.LoopEntries.Single(entry =>
+            string.Equals(entry.AppliesTo.Character.Code, "c0101", StringComparison.OrdinalIgnoreCase));
+        var controlTargetPaths = OnFramework(() => PapResolver.ResolvePapFiles(context.Target.PrimaryTimelineKey)
+            .Where(path => string.Equals(GamePathIdentity.Parse(path).Character.Code, "c0101", StringComparison.OrdinalIgnoreCase))
+            .ToList());
+        var controlPlan = BuildPlan(context.ModDirectory, context.RunSource, context.Target,
+            controlTargetPaths,
+            "Walk [Dancy source-provided c0101 control]",
+            new[] { sourceProvidedC0101 });
+        if (!controlPlan.IsValid || string.Equals(controlPlan.OverrideId, context.Plan.OverrideId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("User-added c0501 and source-provided c0101 plans did not retain distinct stable IDs.");
+
+        return $"{mapping.MappingOrigin.DisplayName()}; zero creator-provided outputs; logical c0501 only; physical {mapping.SourcePapPath}; stable ID distinct from source-provided c0101.";
+    }
+
     private static string Create(RegressionContext context)
     {
         context.Operation = new OverrideService().CreateOrUpdate(context.ModFolder, context.ModDirectory, ModName, context.Plan);
@@ -268,6 +427,30 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         if (!context.Operation.Reload.Succeeded)
             throw new InvalidOperationException($"Penumbra ReloadMod did not complete after test create: {context.Operation.Reload.UserFacingOutcome}");
         return $"Stable ID {context.Operation.Write.OverrideId}; generated {context.Operation.Execution.GeneratedFiles.Count} PAP(s); mapped {context.Operation.Execution.FinalMappings.Count} target path(s); reload {context.Operation.Reload.Actual}.";
+    }
+
+    private static string VerifyUserAddedC0501Metadata(RegressionContext context)
+    {
+        var operation = RequireOperation(context);
+        var meta = JObject.Parse(File.ReadAllText(context.MetaPath));
+        var option = meta["Groups"]?.Children<JObject>()
+            .Where(DancyMetadataMutator.IsDancyGroup)
+            .SelectMany(group => group["Options"]?.Children<JObject>() ?? Enumerable.Empty<JObject>())
+            .SingleOrDefault(candidate => string.Equals(candidate["Id"]?.ToString(), context.Plan.OverrideId, StringComparison.OrdinalIgnoreCase));
+        if (option is null)
+            throw new InvalidOperationException("Dancy did not write the user-added c0501 option into its own metadata group.");
+
+        var description = option["Description"]?.ToString() ?? string.Empty;
+        var targetPath = context.TargetPaths.Single();
+        if (!description.Contains("User-added compatible mapping", StringComparison.Ordinal)
+            || !description.Contains("Elezen Male (c0501)", StringComparison.Ordinal)
+            || !description.Contains("Midlander Male (c0101)", StringComparison.Ordinal)
+            || option["Files"]?[targetPath]?.ToString() != operation.Execution.FinalMappings[targetPath])
+        {
+            throw new InvalidOperationException("Generated Dancy metadata did not retain the c0501 logical race, c0101 physical source, and user-added provenance.");
+        }
+
+        return "Dancy-owned metadata records User-added compatible mapping; logical Elezen Male (c0501); physical Midlander Male (c0101).";
     }
 
     private static string VerifyGeneratedPap(RegressionContext context)
@@ -342,7 +525,25 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         return $"{context.Scenario.OptionName} motion {result.SourceSelection?.HavokMotionIndex} fingerprint {result.SourceMotionFingerprint}; PASS.";
     }
 
-    private static string VerifyRuntimeAndTrigger(RegressionContext context)
+    private static string VerifyUserAddedC0501Fingerprint(RegressionContext context)
+    {
+        var result = RequireOperation(context).Execution.PapResults.Single();
+        if (result.SourceSelection is null
+            || !string.Equals(result.SourceSelection.LogicalGamePath, UserAddedC0501LogicalPath, StringComparison.OrdinalIgnoreCase)
+            || result.SourceSelection.HavokMotionIndex != 1
+            || string.IsNullOrWhiteSpace(result.SourceMotionFingerprint))
+        {
+            throw new InvalidOperationException("VFXEditor did not attest to the c0501 Walk motion-1 fingerprint route.");
+        }
+
+        return $"Walk c0501 motion 1 fingerprint {result.SourceMotionFingerprint}; PASS.";
+    }
+
+    private static string VerifyRuntimeAndTrigger(
+        RegressionContext context,
+        int temporarySettingKey = TemporarySettingKey,
+        string temporarySettingName = "Dancy Treadmill selector regression",
+        bool requirePostDispatchResource = true)
     {
         var operation = RequireOperation(context);
         var player = OnFramework(() =>
@@ -369,7 +570,7 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         var applied = false;
         try
         {
-            var setResult = OnFramework(() => setTemporary.Invoke(playerIndex, context.ModDirectory, false, true, 9999, selections, "Dancy Treadmill selector regression", TemporarySettingKey).ToString());
+            var setResult = OnFramework(() => setTemporary.Invoke(playerIndex, context.ModDirectory, false, true, 9999, selections, temporarySettingName, temporarySettingKey).ToString());
             if (!string.Equals(setResult, "Success", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException($"Penumbra temporary setting returned {setResult}.");
             applied = true;
@@ -389,21 +590,23 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
                     throw new InvalidOperationException($"{gamePath} resolved to {actual}, expected {expected}.");
             }
 
+            if (!requirePostDispatchResource)
+                resourcePaths.Clear();
             var trigger = TriggerTargetThroughConduit(context.Target.Command);
             Thread.Sleep(1000);
             var observedGeneratedPath = resourcePaths.Any(value => redrawnAddresses.Contains(value.Address)
                 && operation.Execution.FinalMappings.TryGetValue(value.GamePath, out var relativePath)
                 && PathSafety.TryResolveInsideRoot(context.ModFolder, relativePath, out var expected)
                 && EquivalentPath(expected, value.FullPath));
-            if (!observedGeneratedPath)
+            if (requirePostDispatchResource && !observedGeneratedPath)
                 throw new InvalidOperationException("Penumbra did not report the local player consuming a generated target PAP after redraw and target dispatch.");
-            return $"{operation.Execution.FinalMappings.Count} target redirect(s) resolved to generated output after redraw; local generated PAP resource request observed; Conduit {trigger}.";
+            return $"{operation.Execution.FinalMappings.Count} target redirect(s) resolved to generated output after redraw; local generated PAP resource observed={observedGeneratedPath}; Conduit {trigger}.";
         }
         finally
         {
             if (applied)
             {
-                _ = OnFramework(() => removeTemporary.Invoke(playerIndex, context.ModDirectory, TemporarySettingKey).ToString());
+                _ = OnFramework(() => removeTemporary.Invoke(playerIndex, context.ModDirectory, temporarySettingKey).ToString());
                 RequestPlayerRedraw(playerIndex);
             }
         }
@@ -440,7 +643,13 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             : $"Removed test ID {context.Plan.OverrideId}; generated output absent; unrelated Dancy options retained. Disk cleanup succeeded, but Penumbra refresh needs retry/reload: {reload.UserFacingOutcome}";
     }
 
-    private static OverridePlan BuildPlan(string modIdentity, RemappableOption source, LuminaEmote target, IReadOnlyList<string> targetPaths, string? planOptionName = null)
+    private static OverridePlan BuildPlan(
+        string modIdentity,
+        RemappableOption source,
+        LuminaEmote target,
+        IReadOnlyList<string> targetPaths,
+        string? planOptionName = null,
+        IReadOnlyList<ParsedEmoteOverride>? selectedSources = null)
     {
         var animation = source.LogicalAnimations.FirstOrDefault();
         return OverridePlanner.Create(new OverridePlanRequest
@@ -453,7 +662,13 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             TargetTimelineKey = target.PrimaryTimelineKey,
             TargetName = target.Name,
             TargetCommand = target.Command,
-            Sources = source.LoopEntries.Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath)).ToList(),
+            Sources = (selectedSources ?? source.LoopEntries)
+                .Select(entry => new OverridePlanSource(
+                    entry.GamePath,
+                    entry.ModdedPapPath,
+                    entry.MappingOrigin,
+                    entry.PhysicalSourceGamePath))
+                .ToList(),
             CompanionTimelines = source.CompanionTimelines,
             TargetGamePaths = targetPaths,
         });

@@ -78,6 +78,9 @@ internal sealed class DancyPushupsWaterRegressionRunner
         if (!RunCase(cases, "Loop-only source selection model", "selection", "Default, select-all, clear, select-only, and deliberate non-loop validation preserve the Loop-only contract.", () => VerifySourceSelectionModel(context)))
             return Complete(started, cases);
 
+        if (!RunCase(cases, "Bench Press c0501 source-provided control", "provenance", "The creator-provided c0501 Push-ups Loop mapping remains source-provided and plans only its matching Water target.", () => VerifySourceProvidedC0501Control(context)))
+            return Complete(started, cases);
+
         if (!RunCase(cases, "Current Water target resolution", "water", "Water is resolved from current game data and each target PAP is structurally inspected.", () => DescribeWaterTargets(context)))
             return Complete(started, cases);
 
@@ -334,6 +337,34 @@ internal sealed class DancyPushupsWaterRegressionRunner
         return $"Logical animations {context.Source.LogicalAnimations.Count}; Select all loops {selectAll.Count}; Clear loop selection 0; Select only 1; default Loop selected {defaultEntries.Count}; Start selected 0; End selected 0; Unknown selected 0; planner rejected Start input.";
     }
 
+    private static string VerifySourceProvidedC0501Control(RegressionContext context)
+    {
+        var source = context.LoopEntries.SingleOrDefault(entry =>
+            string.Equals(entry.AppliesTo.Character.Code, "c0501", StringComparison.OrdinalIgnoreCase));
+        if (source is null)
+            throw new InvalidOperationException("Bench Press does not expose its creator-provided c0501 Loop source.");
+        if (source.MappingOrigin != SourceMappingOrigin.ModProvided
+            || !string.Equals(source.PhysicalSourceOrigin.Code, "c0101", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Bench Press c0501 no longer retains creator-provided logical provenance and its c0101 physical PAP origin.");
+        }
+
+        var plan = BuildPlan(context, new[] { source });
+        var c0501Target = context.WaterTargetPaths.SingleOrDefault(path =>
+            string.Equals(GamePathIdentity.Parse(path).Character.Code, "c0501", StringComparison.OrdinalIgnoreCase));
+        if (!plan.IsValid
+            || plan.SourceMappings.Count != 1
+            || plan.SourceMappings[0].MappingOrigin != SourceMappingOrigin.ModProvided
+            || c0501Target is null
+            || plan.PlannedMappings.Count != 1
+            || !plan.PlannedMappings.ContainsKey(c0501Target))
+        {
+            throw new InvalidOperationException("The creator-provided Bench Press c0501 route no longer produces its isolated Water mapping.");
+        }
+
+        return $"logical {source.GamePath}; physical {source.ModdedPapPath}; {source.MappingOrigin.DisplayName()}; target {c0501Target}; one exact planned mapping.";
+    }
+
     private static string DescribeWaterTargets(RegressionContext context)
     {
         var variants = context.WaterTargetPaths.Select(path =>
@@ -555,7 +586,11 @@ internal sealed class DancyPushupsWaterRegressionRunner
             TargetTimelineKey = context.Water.PrimaryTimelineKey,
             TargetName = context.Water.Name,
             TargetCommand = context.Water.Command,
-            Sources = selected.Select(entry => new OverridePlanSource(entry.GamePath, entry.ModdedPapPath)).ToList(),
+            Sources = selected.Select(entry => new OverridePlanSource(
+                entry.GamePath,
+                entry.ModdedPapPath,
+                entry.MappingOrigin,
+                entry.PhysicalSourceGamePath)).ToList(),
             TargetGamePaths = context.WaterTargetPaths,
         });
     }

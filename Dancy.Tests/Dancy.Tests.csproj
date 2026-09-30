@@ -31,6 +31,7 @@
     <Compile Include="..\Dancy\Pap\StandingIdleVariantCatalog.cs" Link="Pap\StandingIdleVariantCatalog.cs" />
     <Compile Include="..\Dancy\Services\PenumbraReloadResult.cs" Link="Services\PenumbraReloadResult.cs" />
     <Compile Include="..\Dancy\Models\ParsedEmoteOverride.cs" Link="Models\ParsedEmoteOverride.cs" />
+    <Compile Include="..\Dancy\Models\SourceMappingOrigin.cs" Link="Models\SourceMappingOrigin.cs" />
     <Compile Include="..\Dancy\Models\PapSourceGroup.cs" Link="Models\PapSourceGroup.cs" />
     <Compile Include="..\Dancy\Models\RemappableOption.cs" Link="Models\RemappableOption.cs" />
     <Compile Include="..\Dancy\Models\CompanionTimelineOverride.cs" Link="Models\CompanionTimelineOverride.cs" />

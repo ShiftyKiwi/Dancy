@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Dancy.Domain;
 
@@ -31,6 +32,24 @@ public readonly record struct CharacterPathIdentity(string Code, string Race, st
     public bool IsKnown => !string.IsNullOrEmpty(Code) && !string.IsNullOrEmpty(Race);
 
     public string DisplayName => IsKnown ? $"{Race} {Sex} ({Code})" : "Unknown rig";
+
+    public static IReadOnlyList<CharacterPathIdentity> PlayableIdentities { get; }
+        = KnownCharacters
+            .Select(pair => new CharacterPathIdentity(pair.Key, pair.Value.Race, pair.Value.Sex))
+            .OrderBy(identity => identity.Code, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public static bool TryGet(string? code, out CharacterPathIdentity identity)
+    {
+        if (!string.IsNullOrWhiteSpace(code) && KnownCharacters.TryGetValue(code, out var value))
+        {
+            identity = new CharacterPathIdentity(code.ToLowerInvariant(), value.Race, value.Sex);
+            return true;
+        }
+
+        identity = new CharacterPathIdentity(string.Empty, string.Empty, string.Empty);
+        return false;
+    }
 
     public static CharacterPathIdentity FromGamePath(string? gamePath)
     {
