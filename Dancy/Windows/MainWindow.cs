@@ -1403,6 +1403,7 @@ namespace Dancy.Windows
             => strategy switch
             {
                 PapOverrideWriteStrategy.StandingIdleMotion0 => "Preserve target idle structure",
+                PapOverrideWriteStrategy.SelectorBankEventPatch => "Preserve selected source animation bank",
                 PapOverrideWriteStrategy.SingleSectionEventPatch => "Standard target redirect",
                 _ => "Validated target mapping",
             };

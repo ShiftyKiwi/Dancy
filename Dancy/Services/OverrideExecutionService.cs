@@ -126,7 +126,8 @@ public sealed class OverrideExecutionService
                 }
 
                 var targetEvents = OnFrameworkThread(() => targetStrategies
-                    .Where(pair => pair.Compatibility.WriteStrategy == PapOverrideWriteStrategy.SingleSectionEventPatch)
+                    .Where(pair => pair.Compatibility.WriteStrategy is PapOverrideWriteStrategy.SingleSectionEventPatch
+                        or PapOverrideWriteStrategy.SelectorBankEventPatch)
                     .Select(pair => (GamePath: pair.Target.GamePath, EventIdentifier: PapEditor.ReadTargetEventIdentifier(pair.Target.GamePath)))
                     .ToList());
                 var eventGroups = targetEvents

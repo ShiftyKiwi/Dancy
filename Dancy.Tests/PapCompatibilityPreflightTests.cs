@@ -71,6 +71,7 @@ public class PapCompatibilityPreflightTests
 
         Assert.Equal(PapCompatibilityStatus.Compatible, result.Status);
         Assert.True(result.CanCreate);
+        Assert.Equal(PapOverrideWriteStrategy.SelectorBankEventPatch, result.WriteStrategy);
     }
 
     [Fact]
@@ -100,6 +101,37 @@ public class PapCompatibilityPreflightTests
 
         Assert.Equal(PapCompatibilityStatus.Unsupported, result.Status);
         Assert.Contains("selector-backed", result.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RejectsASelectorBankWhenTheTargetEventWouldDuplicateAnUntouchedSection()
+    {
+        var source = new PapFileInspector.PapFileInspection
+        {
+            AnimationCount = 2,
+            AnimationNames = new[] { "style", "walk" },
+            HavokIndices = new[] { 0, 1 },
+            TimelineSectionSizes = new[] { 8, 8 },
+        };
+        var selection = new SourceAnimationSelection(
+            "chara/human/c0101/animation/a0001/bt_common/emote/loop.pap",
+            "files/shared.pap",
+            1,
+            "walk",
+            1,
+            1,
+            SourceAnimationSelectionMethod.CompanionTimelineEvent,
+            "Companion timeline selected event walk.");
+
+        var result = PapCompatibilityPreflight.Evaluate(
+            source,
+            selection,
+            new PapTargetInspection("chara/human/c0101/animation/a0001/bt_common/emote/target.pap", Inspection("style", 0)));
+
+        Assert.Equal(PapCompatibilityStatus.Unsupported, result.Status);
+        Assert.False(result.CanCreate);
+        Assert.Equal(PapCompatibilityBlocker.Target, result.Blocker);
+        Assert.Contains("duplicate event", result.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

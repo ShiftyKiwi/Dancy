@@ -91,7 +91,9 @@ public static class PapEditor
         {
             TargetGamePath = defaultPath,
             EventIdentifier = eventIdentifier,
-            WriteStrategy = PapOverrideWriteStrategy.SingleSectionEventPatch,
+            WriteStrategy = selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+                ? PapOverrideWriteStrategy.SelectorBankEventPatch
+                : PapOverrideWriteStrategy.SingleSectionEventPatch,
             AnimationCount = patched.AnimationCount,
             PatchedTimelineEntries = patched.PatchedTimelineEntries,
             OutputLength = outputLength,
@@ -409,6 +411,15 @@ public static class PapEditor
         var originalTmbOffset = sourceInspection.TimelineOffset;
 
         var animationHeaders = ReadAnimationHeaders(papBytes, animationHeaderOffset, animationCount);
+        var preserveSourceBank = selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent;
+        if (preserveSourceBank
+            && animationHeaders.Where((_, index) => index != selection.AnimationHeaderIndex)
+                .Select(header => ReadPaddedString(header, 0, PapAnimationNameSize))
+                .Any(name => string.Equals(name, eventIdentifier, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new InvalidDataException("The target animation event already belongs to an untouched source-bank section.");
+        }
+
         var selectedHeader = animationHeaders[selection.AnimationHeaderIndex];
         WritePaddedString(selectedHeader, 0, PapAnimationNameSize, eventIdentifier);
 
@@ -418,28 +429,44 @@ public static class PapEditor
         var tmbOffsetMod = originalTmbOffset % 4;
         var tmbSections = ReadTmbSections(papBytes, originalTmbOffset, animationCount, tmbOffsetMod);
         var patchedTmb = PatchTmb(tmbSections[selection.EmbeddedTmbIndex], eventIdentifier);
+        tmbSections[selection.EmbeddedTmbIndex] = patchedTmb.Bytes;
+        var outputHeaders = preserveSourceBank
+            ? animationHeaders
+            : new List<byte[]> { selectedHeader };
+        var outputTmbSections = preserveSourceBank
+            ? tmbSections
+            : new List<byte[]> { patchedTmb.Bytes };
+        var outputAnimationCount = outputHeaders.Count;
 
         using var output = new MemoryStream();
         using var writer = new BinaryWriter(output);
 
         var preamble = papBytes[..PapInfoOffsetPosition];
-        BitConverter.GetBytes((short)1).CopyTo(preamble, 8);
+        BitConverter.GetBytes((short)outputAnimationCount).CopyTo(preamble, 8);
         writer.Write(preamble);
 
         var newAnimationHeaderOffset = PapHeaderSize;
-        var newHkxOffset = newAnimationHeaderOffset + selectedHeader.Length;
+        var newHkxOffset = newAnimationHeaderOffset + outputHeaders.Sum(header => header.Length);
         var newTmbOffset = newHkxOffset + hkxData.Length;
         writer.Write(newAnimationHeaderOffset);
         writer.Write(newHkxOffset);
         writer.Write(newTmbOffset);
 
-        writer.Write(selectedHeader);
+        foreach (var header in outputHeaders)
+            writer.Write(header);
 
         writer.Write(hkxData);
 
-        writer.Write(patchedTmb.Bytes);
+        for (var index = 0; index < outputTmbSections.Count; index++)
+        {
+            writer.Write(outputTmbSections[index]);
+            WritePadding(writer, Padding(writer.BaseStream.Position, index, outputAnimationCount, newTmbOffset % 4));
+        }
 
-        return (output.ToArray(), 1, patchedTmb.PatchedEntries);
+        var result = output.ToArray();
+        if (preserveSourceBank)
+            ValidatePreservedSelectorBank(sourceInspection, papBytes, result, selection, eventIdentifier);
+        return (result, outputAnimationCount, patchedTmb.PatchedEntries);
     }
 
     private static void ValidateSelection(PapFileInspector.PapFileInspection inspection, SourceAnimationSelection selection)
@@ -474,6 +501,46 @@ public static class PapEditor
         }
 
         return headers;
+    }
+
+    private static void ValidatePreservedSelectorBank(
+        PapFileInspector.PapFileInspection source,
+        byte[] sourceBytes,
+        byte[] outputBytes,
+        SourceAnimationSelection selection,
+        string targetEvent)
+    {
+        var output = PapFileInspector.Inspect(outputBytes);
+        if (output.AnimationCount != source.AnimationCount
+            || output.TimelineSectionSizes.Count != source.TimelineSectionSizes.Count
+            || output.HavokIndices.Count != source.HavokIndices.Count
+            || output.HavokIndices[selection.AnimationHeaderIndex] != selection.HavokMotionIndex)
+        {
+            throw new InvalidDataException("The selector-backed output did not preserve the source animation-bank topology.");
+        }
+
+        if (output.AnimationNames.Count(name => string.Equals(name, targetEvent, StringComparison.OrdinalIgnoreCase)) != 1)
+            throw new InvalidDataException("The selector-backed output does not contain exactly one target animation event.");
+
+        var sourceHeaders = ReadAnimationHeaders(sourceBytes, source.AnimationHeaderOffset, source.AnimationCount);
+        var outputHeaders = ReadAnimationHeaders(outputBytes, output.AnimationHeaderOffset, output.AnimationCount);
+        var sourceTimelines = ReadTmbSections(sourceBytes, source.TimelineOffset, source.AnimationCount, source.TimelineOffset % 4);
+        var outputTimelines = ReadTmbSections(outputBytes, output.TimelineOffset, output.AnimationCount, output.TimelineOffset % 4);
+        for (var index = 0; index < source.AnimationCount; index++)
+        {
+            if (index == selection.AnimationHeaderIndex)
+                continue;
+            if (!sourceHeaders[index].SequenceEqual(outputHeaders[index])
+                || !sourceTimelines[index].SequenceEqual(outputTimelines[index]))
+            {
+                throw new InvalidDataException("The selector-backed output changed an unselected source-bank section.");
+            }
+        }
+
+        var sourceHkx = sourceBytes.AsSpan(source.HavokOffset, source.HavokSize);
+        var outputHkx = outputBytes.AsSpan(output.HavokOffset, output.HavokSize);
+        if (!sourceHkx.SequenceEqual(outputHkx))
+            throw new InvalidDataException("The selector-backed output changed the source Havok payload.");
     }
 
     private static List<byte[]> ReadTmbSections(byte[] papBytes, int tmbOffset, int animationCount, int customOffset)
@@ -581,6 +648,14 @@ public static class PapEditor
 
         Array.Clear(bytes, offset, length);
         Buffer.BlockCopy(valueBytes, 0, bytes, offset, valueBytes.Length);
+    }
+
+    private static string ReadPaddedString(byte[] bytes, int offset, int length)
+    {
+        var actualLength = 0;
+        while (actualLength < length && bytes[offset + actualLength] != 0)
+            actualLength++;
+        return Encoding.UTF8.GetString(bytes, offset, actualLength);
     }
 
     private static int Padding(long position, int itemIdx, int numItems, int customOffset)

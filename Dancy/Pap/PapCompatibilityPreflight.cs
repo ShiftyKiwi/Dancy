@@ -15,6 +15,7 @@ public enum PapCompatibilityStatus
 public enum PapOverrideWriteStrategy
 {
     SingleSectionEventPatch,
+    SelectorBankEventPatch,
     StandingIdleMotion0,
 }
 
@@ -137,20 +138,39 @@ public static class PapCompatibilityPreflight
                 Blocker: PapCompatibilityBlocker.Target);
         }
 
+        var targetEvent = target.Inspection.AnimationNames.SingleOrDefault();
+        if (selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+            && !string.IsNullOrWhiteSpace(targetEvent)
+            && source.AnimationNames.Where((_, index) => index != selection.AnimationHeaderIndex)
+                .Any(name => string.Equals(name, targetEvent, StringComparison.OrdinalIgnoreCase)))
+        {
+            return new PapCompatibilityResult(
+                PapCompatibilityStatus.Unsupported,
+                "The target animation event already belongs to an untouched source-bank section. Dancy will not create a duplicate event binding.",
+                Blocker: PapCompatibilityBlocker.Target);
+        }
+
+        var writeStrategy = selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+            ? PapOverrideWriteStrategy.SelectorBankEventPatch
+            : PapOverrideWriteStrategy.SingleSectionEventPatch;
         var sourceHavok = selection.HavokMotionIndex;
         var targetHavok = target.Inspection.HavokIndices.SingleOrDefault();
         if (targetHavok != sourceHavok)
         {
             return new PapCompatibilityResult(
                 PapCompatibilityStatus.CompatibleWithWarning,
-                "The source and target use different Havok indices. Dancy preserves the source motion and updates the target event identifier.",
-                PapOverrideWriteStrategy.SingleSectionEventPatch);
+                selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+                    ? "The selected source motion uses a different Havok index than the target. Dancy preserves the complete verified source bank and updates only the selected target event."
+                    : "The source and target use different Havok indices. Dancy preserves the source motion and updates the target event identifier.",
+                writeStrategy);
         }
 
         return new PapCompatibilityResult(
             PapCompatibilityStatus.Compatible,
-            "Source and target PAP variants use Dancy's supported one-animation, one-TMB-section structure.",
-            PapOverrideWriteStrategy.SingleSectionEventPatch);
+            selection.Method == SourceAnimationSelectionMethod.CompanionTimelineEvent
+                ? "The verified selector-backed source bank will be retained in full while Dancy updates only the selected target event."
+                : "Source and target PAP variants use Dancy's supported one-animation, one-TMB-section structure.",
+            writeStrategy);
     }
 
     public static bool IsSupportedStandingIdleTarget(PapTargetInspection target, out string reason)

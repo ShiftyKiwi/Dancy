@@ -1,5 +1,6 @@
 #if DEBUG
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -31,9 +32,16 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
 {
     private const string ModName = "[HS] Warrior of Lift (Default)";
     private const string SourceGroupName = "Treadmill - /breathcontrol";
-    private const string RunOptionName = "Run";
-    private const string TargetCommand = "/water";
     private const int TemporarySettingKey = -9277;
+
+    private static readonly Scenario[] Scenarios =
+    [
+        new("Style", "/water"),
+        new("Walk", "/water"),
+        new("Run", "/water"),
+        new("Sprint", "/water"),
+        new("Walk", "/beesknees"),
+    ];
 
     private static readonly IReadOnlyDictionary<string, (string CompanionFile, string Event, int Index)> ExpectedSelections =
         new Dictionary<string, (string, string, int)>(StringComparer.OrdinalIgnoreCase)
@@ -45,6 +53,15 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         };
 
     public DancySelfTestResult Run()
+    {
+        var started = DateTimeOffset.UtcNow;
+        var cases = new List<DancySelfTestCase>();
+        foreach (var scenario in Scenarios)
+            cases.AddRange(RunScenario(scenario).Cases);
+        return Complete(started, cases);
+    }
+
+    private static DancySelfTestResult RunScenario(Scenario scenario)
     {
         var started = DateTimeOffset.UtcNow;
         var cases = new List<DancySelfTestCase>();
@@ -62,10 +79,10 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
                 return Complete(started, cases);
             }
 
-            if (!RunCase(cases, "Locate Treadmill fixture", "baseline", "One installed Warrior of Lift Treadmill fixture is available and no same-ID test override will be replaced.", () =>
+            if (!RunCase(cases, $"Locate Treadmill {scenario.OptionName} fixture", "baseline", "The installed Warrior of Lift selector is resolved from its actual option mappings without a parent-group assumption.", () =>
                 {
-                    context = CaptureContext();
-                    return $"{context.ModDirectory}; source {context.RunSource.LoopEntries.Count} logical loop path(s); shared PAP {context.SharedPapPath}; metadata {context.MetadataFormat}; source SHA-256 {context.SourcePapHash}.";
+                    context = CaptureContext(scenario);
+                    return $"{context.ModDirectory}; group {SourceGroupName}; option {scenario.OptionName}; source {context.RunSource.LoopEntries.Count} logical loop path(s); shared PAP {context.SharedPapPath}; metadata {context.MetadataFormat}; source SHA-256 {context.SourcePapHash}.";
                 }))
             {
                 return Complete(started, cases);
@@ -80,22 +97,22 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             if (!RunCase(cases, "All option selectors", "selection", "Style, Walk, Run, and Sprint each resolve from their companion action TMB to one distinct source motion.", () => VerifyAllSelectors(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, "Run target resolution", "target", "A current one-section /water target is available for the Run production route.", () => DescribeTarget(context)))
+            if (!RunCase(cases, $"{scenario.OptionName} target resolution", "target", $"A current one-section {scenario.TargetCommand} target is available for the production route.", () => DescribeTarget(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, "Run planning and preflight", "preflight", "The normal production plan is valid and selector-backed Run is accepted only for one-section targets.", () => VerifyPreflight(context)))
+            if (!RunCase(cases, $"{scenario.OptionName} planning and preflight", "preflight", "The normal production plan retains the verified selected source bank for one-section targets.", () => VerifyPreflight(context)))
                 return Complete(started, cases);
 
             if (!RunCase(cases, "Production create and reload", "create", "OverrideService writes only one Dancy-owned option and reloads the selected mod.", () => Create(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, "Generated Run PAP", "pap", "The generated one-section PAP uses Run header/motion/timeline and no other active treadmill-bank section.", () => VerifyGeneratedPap(context)))
+            if (!RunCase(cases, $"Generated {scenario.OptionName} PAP", "pap", "The generated PAP retains the complete source bank and changes only the selected header and embedded timeline.", () => VerifyGeneratedPap(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, "Source motion fingerprint", "fingerprint", "VFXEditor fingerprints the selected Run motion before and after generation identically.", () => VerifyFingerprint(context)))
+            if (!RunCase(cases, $"{scenario.OptionName} source motion fingerprint", "fingerprint", "VFXEditor fingerprints the selected source motion before and after generation identically.", () => VerifyFingerprint(context)))
                 return Complete(started, cases);
 
-            if (!RunCase(cases, "Penumbra runtime resolution", "runtime", "Temporary player-scoped selection resolves every mapped /water PAP to Dancy output.", () => VerifyRuntimeAndTrigger(context)))
+            if (!RunCase(cases, $"{scenario.OptionName} redraw and runtime resolution", "runtime", "Temporary player-scoped selection redraws the local player, resolves a generated target PAP, and records its resource request before target dispatch.", () => VerifyRuntimeAndTrigger(context)))
                 return Complete(started, cases);
 
             if (!RunCase(cases, "Source integrity", "integrity", "The original shared PAP and all non-Dancy metadata remain unchanged.", () => VerifySourceIntegrity(context)))
@@ -106,11 +123,11 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         finally
         {
             if (context?.Created == true)
-                RunCase(cases, "Cleanup and restoration", "cleanup", "Only the generated Treadmill Run test option and its unreferenced output are removed; unrelated Dancy options remain.", () => Cleanup(context));
+                RunCase(cases, $"{scenario.OptionName} cleanup and restoration", "cleanup", "Only the generated Treadmill test option and its unreferenced output are removed; unrelated Dancy options remain.", () => Cleanup(context));
         }
     }
 
-    private static RegressionContext CaptureContext()
+    private static RegressionContext CaptureContext(Scenario scenario)
     {
         var mod = OnFramework(() => new GetModList(Plugin.PluginInterface).Invoke()
             .FirstOrDefault(pair => string.Equals(pair.Value, ModName, StringComparison.OrdinalIgnoreCase)));
@@ -134,34 +151,35 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
                 throw new InvalidOperationException($"Warrior of Lift is missing Treadmill option '{optionName}'.");
         }
 
-        var run = sourceOptions[RunOptionName];
+        var run = sourceOptions[scenario.OptionName];
         var runEntries = run.LoopEntries;
         if (runEntries.Count == 0)
-            throw new InvalidOperationException("The Treadmill Run option has no Loop source PAP paths.");
+            throw new InvalidOperationException($"The Treadmill {scenario.OptionName} option has no Loop source PAP paths.");
         var physicalPaps = runEntries.Select(entry => entry.ModdedPapPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (physicalPaps.Count != 1 || !PathSafety.TryResolveInsideRoot(modFolder, physicalPaps[0], out var sharedPapPath) || !File.Exists(sharedPapPath))
-            throw new InvalidOperationException("Treadmill Run must resolve to one existing shared physical PAP.");
+            throw new InvalidOperationException($"Treadmill {scenario.OptionName} must resolve to one existing shared physical PAP.");
 
-        var target = OnFramework(() => EmoteLibrary.AllEmotes.FirstOrDefault(emote => string.Equals(emote.Command, TargetCommand, StringComparison.OrdinalIgnoreCase)))
-            ?? throw new InvalidOperationException($"The current game data has no {TargetCommand} target.");
+        var target = OnFramework(() => EmoteLibrary.AllEmotes.FirstOrDefault(emote => string.Equals(emote.Command, scenario.TargetCommand, StringComparison.OrdinalIgnoreCase)))
+            ?? throw new InvalidOperationException($"The current game data has no {scenario.TargetCommand} target.");
         var targetPaths = OnFramework(() => PapResolver.ResolvePapFiles(target.PrimaryTimelineKey)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToList());
         if (targetPaths.Count == 0)
-            throw new InvalidOperationException($"No current PAP paths resolved for {TargetCommand}.");
+            throw new InvalidOperationException($"No current PAP paths resolved for {scenario.TargetCommand}.");
         var targetInspections = OnFramework(() => targetPaths.ToDictionary(path => path, PapEditor.InspectTargetPap, StringComparer.OrdinalIgnoreCase));
         if (targetInspections.Values.Any(inspection => inspection.AnimationCount != 1 || inspection.TimelineSectionSizes.Count != 1))
-            throw new InvalidOperationException($"{TargetCommand} no longer resolves solely to normal one-section PAP targets.");
+            throw new InvalidOperationException($"{scenario.TargetCommand} no longer resolves solely to normal one-section PAP targets.");
 
-        var plan = BuildPlan(mod.Key, run, target, targetPaths);
+        var plan = BuildPlan(mod.Key, run, target, targetPaths, $"{scenario.OptionName} [Dancy redraw regression {scenario.TargetCommand.TrimStart('/')}]");
         if (!plan.IsValid)
             throw new InvalidOperationException(string.Join("; ", plan.Errors));
         var existing = DancyFileManager.GetDancyOverrides(modFolder);
         if (existing.Any(option => string.Equals(option.Id, plan.OverrideId, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("A matching Dancy Treadmill Run test option already exists. Dancy will not overwrite a user-owned matching override during validation.");
+            throw new InvalidOperationException($"A matching Dancy Treadmill {scenario.OptionName} test option already exists. Dancy will not overwrite a user-owned matching override during validation.");
 
         return new RegressionContext
         {
+            Scenario = scenario,
             ModDirectory = mod.Key,
             ModFolder = modFolder,
             MetaPath = metaPath,
@@ -232,13 +250,14 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
 
     private static string VerifyPreflight(RegressionContext context)
     {
+        var optionName = context.Scenario.OptionName;
         var copy = context.Plan.PapCopies.Single();
         var selection = SourceAnimationSelectionResolver.Resolve(context.ModFolder, copy).Selection
-            ?? throw new InvalidOperationException("The Run source selector did not return a selection.");
+            ?? throw new InvalidOperationException($"The {optionName} source selector did not return a selection.");
         var source = PapFileInspector.InspectFile(context.SharedPapPath);
         var result = PapCompatibilityPreflight.Evaluate(source, selection, copy.TargetGamePaths.Select(path => new PapTargetInspection(path, context.TargetInspections[path])));
-        if (!result.CanCreate || result.WriteStrategy != PapOverrideWriteStrategy.SingleSectionEventPatch)
-            throw new InvalidOperationException($"The selector-backed Run route was rejected: {result.Reason}");
+        if (!result.CanCreate || result.WriteStrategy != PapOverrideWriteStrategy.SelectorBankEventPatch)
+            throw new InvalidOperationException($"The selector-backed {optionName} route was rejected: {result.Reason}");
         return $"{result.Status}: {result.Reason}; selected {selection.AnimationEvent} / H{selection.HavokMotionIndex} / TMB {selection.EmbeddedTmbIndex}.";
     }
 
@@ -254,69 +273,95 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
     private static string VerifyGeneratedPap(RegressionContext context)
     {
         var operation = RequireOperation(context);
-        var run = ExpectedSelections[RunOptionName];
+        var optionName = context.Scenario.OptionName;
+        var selected = ExpectedSelections[optionName];
         var result = operation.Execution.PapResults.Single();
         var selection = result.SourceSelection ?? throw new InvalidOperationException("The generated PAP did not retain its source-motion selection record.");
-        if (selection.AnimationHeaderIndex != run.Index || selection.HavokMotionIndex != run.Index || selection.EmbeddedTmbIndex != run.Index
-            || !string.Equals(selection.AnimationEvent, run.Event, StringComparison.OrdinalIgnoreCase))
+        if (selection.AnimationHeaderIndex != selected.Index || selection.HavokMotionIndex != selected.Index || selection.EmbeddedTmbIndex != selected.Index
+            || !string.Equals(selection.AnimationEvent, selected.Event, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException("The generated PAP did not retain the selected Run source unit.");
+            throw new InvalidOperationException($"The generated PAP did not retain the selected {optionName} source unit.");
         }
 
-        var output = operation.Execution.GeneratedFiles.Single();
-        if (!PathSafety.TryResolveInsideRoot(context.ModFolder, output, out var outputPath) || !File.Exists(outputPath))
-            throw new InvalidOperationException("The generated Treadmill Run PAP is missing or unsafe.");
-        var inspection = PapFileInspector.InspectFile(outputPath);
-        var expectedTargetEvent = context.TargetInspections[operation.Execution.FinalMappings.First().Key].AnimationNames.Single();
-        var events = PapEditor.ReadTimelineEventIdentifiers(outputPath);
-        if (inspection.AnimationCount != 1
-            || inspection.TimelineSectionSizes.Count != 1
-            || inspection.HavokIndices.Single() != run.Index
-            || !string.Equals(inspection.AnimationNames.Single(), expectedTargetEvent, StringComparison.OrdinalIgnoreCase)
-            || events.Count == 0
-            || events.Any(value => !string.Equals(value, expectedTargetEvent, StringComparison.OrdinalIgnoreCase)))
+        var sourceBytes = PapFileInspector.ReadFileWithRetry(context.SharedPapPath);
+        var source = PapFileInspector.Inspect(sourceBytes);
+        var sourceEmbedded = PapEditor.ReadEmbeddedTimelineEventIdentifiers(context.SharedPapPath);
+        var details = new List<string>();
+        foreach (var patch in operation.Execution.PapResults)
         {
-            throw new InvalidOperationException("The generated PAP does not have the required one-section target structure.");
-        }
-        if (inspection.AnimationNames.Any(name => ExpectedSelections.Values.Any(expected => string.Equals(name, expected.Event, StringComparison.OrdinalIgnoreCase)))
-            || events.Any(value => ExpectedSelections.Values.Any(expected => string.Equals(value, expected.Event, StringComparison.OrdinalIgnoreCase))))
-        {
-            throw new InvalidOperationException("A stale treadmill selector event remained in the generated target PAP.");
+            if (patch.WriteStrategy != PapOverrideWriteStrategy.SelectorBankEventPatch)
+                throw new InvalidOperationException($"The {optionName} output did not use Dancy's selector-bank writer.");
+            if (!operation.Execution.FinalMappings.TryGetValue(patch.TargetGamePath, out var output)
+                || !PathSafety.TryResolveInsideRoot(context.ModFolder, output, out var outputPath)
+                || !File.Exists(outputPath))
+            {
+                throw new InvalidOperationException($"The generated Treadmill {optionName} PAP is missing or unsafe.");
+            }
+
+            var inspection = PapFileInspector.InspectFile(outputPath);
+            var embedded = PapEditor.ReadEmbeddedTimelineEventIdentifiers(outputPath);
+            if (inspection.AnimationCount != source.AnimationCount
+                || inspection.TimelineSectionSizes.Count != source.TimelineSectionSizes.Count
+                || !inspection.HavokIndices.SequenceEqual(source.HavokIndices)
+                || inspection.HavokIndices[selected.Index] != selected.Index
+                || !string.Equals(inspection.AnimationNames[selected.Index], patch.EventIdentifier, StringComparison.OrdinalIgnoreCase)
+                || inspection.AnimationNames.Count(name => string.Equals(name, patch.EventIdentifier, StringComparison.OrdinalIgnoreCase)) != 1
+                || embedded.Count != sourceEmbedded.Count
+                || !embedded[selected.Index].Contains(patch.EventIdentifier, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException($"The generated {optionName} PAP did not preserve the source-bank structure around the selected target event.");
+            }
+
+            var outputBytes = PapFileInspector.ReadFileWithRetry(outputPath);
+            for (var index = 0; index < source.AnimationCount; index++)
+            {
+                if (index == selected.Index)
+                    continue;
+                if (!HashRange(sourceBytes, source.AnimationHeaders[index].Offset, source.AnimationHeaders[index].Size)
+                        .Equals(HashRange(outputBytes, inspection.AnimationHeaders[index].Offset, inspection.AnimationHeaders[index].Size), StringComparison.OrdinalIgnoreCase)
+                    || !HashRange(sourceBytes, source.TimelineSections[index].Offset, source.TimelineSections[index].Size)
+                        .Equals(HashRange(outputBytes, inspection.TimelineSections[index].Offset, inspection.TimelineSections[index].Size), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException($"The generated {optionName} PAP changed a non-selected source-bank section.");
+                }
+            }
+
+            if (!ReadHavokPayload(context.SharedPapPath).SequenceEqual(ReadHavokPayload(outputPath)))
+                throw new InvalidOperationException($"The generated {optionName} PAP changed the source Havok payload.");
+            details.Add($"{output}; headers {inspection.AnimationCount}; H={string.Join(',', inspection.HavokIndices)}; TMB {inspection.TimelineSectionSizes.Count}; selected {optionName} event {patch.EventIdentifier}.");
         }
 
-        var text = Encoding.UTF8.GetString(File.ReadAllBytes(outputPath));
-        if (!text.Contains("treadmill_run.avfx", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("treadmill_back.avfx", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("treadmill_sprint.avfx", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("treadmill_screen.avfx", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("The generated Run PAP did not retain only the selected PAP-local TMB effect references.");
-        }
-
-        if (!ReadHavokPayload(context.SharedPapPath).SequenceEqual(ReadHavokPayload(outputPath)))
-            throw new InvalidOperationException("The generated PAP changed the source Havok payload.");
-
-        return $"{output}; header {inspection.AnimationNames.Single()}; H{inspection.HavokIndices.Single()}; TMB 1; selected Run TMB effect treadmill_run.avfx retained; Style/Walk/Sprint external PAP-local effects absent; companion treadmill_screen.avfx not transferred.";
+        return string.Join(" | ", details);
     }
 
     private static string VerifyFingerprint(RegressionContext context)
     {
         var result = RequireOperation(context).Execution.PapResults.Single();
         if (string.IsNullOrWhiteSpace(result.SourceMotionFingerprint))
-            throw new InvalidOperationException("VFXEditor did not attest to selected Run motion fingerprint preservation.");
-        return $"Run motion {result.SourceSelection?.HavokMotionIndex} fingerprint {result.SourceMotionFingerprint}; PASS.";
+            throw new InvalidOperationException($"VFXEditor did not attest to selected {context.Scenario.OptionName} motion fingerprint preservation.");
+        return $"{context.Scenario.OptionName} motion {result.SourceSelection?.HavokMotionIndex} fingerprint {result.SourceMotionFingerprint}; PASS.";
     }
 
     private static string VerifyRuntimeAndTrigger(RegressionContext context)
     {
         var operation = RequireOperation(context);
-        var playerIndex = OnFramework(() => Plugin.ObjectTable.LocalPlayer?.ObjectIndex ?? -1);
-        if (playerIndex < 0)
-            throw new InvalidOperationException("The local player is unavailable for runtime redirect verification.");
+        var player = OnFramework(() =>
+        {
+            var localPlayer = Plugin.ObjectTable.LocalPlayer
+                ?? throw new InvalidOperationException("The local player is unavailable for runtime redirect verification.");
+            return (Index: localPlayer.ObjectIndex, Address: localPlayer.Address);
+        });
+        var playerIndex = player.Index;
 
         var setTemporary = new SetTemporaryModSettingsPlayer(Plugin.PluginInterface);
         var removeTemporary = new RemoveTemporaryModSettingsPlayer(Plugin.PluginInterface);
         var resolve = new ResolvePlayerPath(Plugin.PluginInterface);
+        var redrawn = new ConcurrentQueue<(nint Address, int Index)>();
+        var resourcePaths = new ConcurrentQueue<(nint Address, string GamePath, string FullPath)>();
+        using var redrawObserver = GameObjectRedrawn.Subscriber(Plugin.PluginInterface, (address, index) => redrawn.Enqueue((address, index)));
+        using var resourceObserver = GameObjectResourcePathResolved.Subscriber(Plugin.PluginInterface, (address, gamePath, fullPath) => resourcePaths.Enqueue((address, gamePath, fullPath)));
+        redrawObserver.Enable();
+        resourceObserver.Enable();
         var selections = new Dictionary<string, IReadOnlyList<string>>
         {
             [DancyMetadataMutator.GroupName] = new[] { context.Plan.DisplayName },
@@ -329,6 +374,12 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
                 throw new InvalidOperationException($"Penumbra temporary setting returned {setResult}.");
             applied = true;
 
+            RequestPlayerRedraw(playerIndex);
+            Thread.Sleep(2000);
+            var redrawnAddresses = redrawn.Where(value => value.Index == playerIndex).Select(value => value.Address).ToHashSet();
+            if (redrawnAddresses.Count == 0)
+                throw new InvalidOperationException("Penumbra did not report a local-player redraw after Dancy applied the temporary test setting.");
+
             foreach (var (gamePath, relativePath) in operation.Execution.FinalMappings)
             {
                 if (!PathSafety.TryResolveInsideRoot(context.ModFolder, relativePath, out var expected))
@@ -339,12 +390,22 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             }
 
             var trigger = TriggerTargetThroughConduit(context.Target.Command);
-            return $"{operation.Execution.FinalMappings.Count} target redirect(s) resolved to generated output; Conduit {trigger}.";
+            Thread.Sleep(1000);
+            var observedGeneratedPath = resourcePaths.Any(value => redrawnAddresses.Contains(value.Address)
+                && operation.Execution.FinalMappings.TryGetValue(value.GamePath, out var relativePath)
+                && PathSafety.TryResolveInsideRoot(context.ModFolder, relativePath, out var expected)
+                && EquivalentPath(expected, value.FullPath));
+            if (!observedGeneratedPath)
+                throw new InvalidOperationException("Penumbra did not report the local player consuming a generated target PAP after redraw and target dispatch.");
+            return $"{operation.Execution.FinalMappings.Count} target redirect(s) resolved to generated output after redraw; local generated PAP resource request observed; Conduit {trigger}.";
         }
         finally
         {
             if (applied)
+            {
                 _ = OnFramework(() => removeTemporary.Invoke(playerIndex, context.ModDirectory, TemporarySettingKey).ToString());
+                RequestPlayerRedraw(playerIndex);
+            }
         }
     }
 
@@ -366,27 +427,27 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             throw new InvalidOperationException($"Cleanup removed {removal.RemovedOverrideCount} Dancy options instead of one test option.");
         var remaining = DancyFileManager.GetDancyOverrides(context.ModFolder);
         if (remaining.Any(option => string.Equals(option.Id, context.Plan.OverrideId, StringComparison.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("The Treadmill Run test option remained in metadata after cleanup.");
+            throw new InvalidOperationException($"The Treadmill {context.Scenario.OptionName} test option remained in metadata after cleanup.");
         if (operation.Execution.GeneratedFiles.Any(path => PathSafety.TryResolveInsideRoot(context.ModFolder, path, out var full) && File.Exists(full)))
-            throw new InvalidOperationException("Treadmill Run cleanup left generated PAP output on disk.");
+            throw new InvalidOperationException($"Treadmill {context.Scenario.OptionName} cleanup left generated PAP output on disk.");
         var expectedIds = context.DancyOverridesBefore.Select(option => option.Id).OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
         var actualIds = remaining.Select(option => option.Id).OrderBy(value => value, StringComparer.OrdinalIgnoreCase);
         if (!expectedIds.SequenceEqual(actualIds, StringComparer.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Treadmill Run cleanup changed an unrelated Dancy override.");
+            throw new InvalidOperationException($"Treadmill {context.Scenario.OptionName} cleanup changed an unrelated Dancy override.");
         var reload = new PenumbraIpcModReloader().Reload(context.ModDirectory, ModName);
         return reload.Succeeded
             ? $"Removed test ID {context.Plan.OverrideId}; generated output absent; unrelated Dancy options retained; reload {reload.Actual}."
             : $"Removed test ID {context.Plan.OverrideId}; generated output absent; unrelated Dancy options retained. Disk cleanup succeeded, but Penumbra refresh needs retry/reload: {reload.UserFacingOutcome}";
     }
 
-    private static OverridePlan BuildPlan(string modIdentity, RemappableOption source, LuminaEmote target, IReadOnlyList<string> targetPaths)
+    private static OverridePlan BuildPlan(string modIdentity, RemappableOption source, LuminaEmote target, IReadOnlyList<string> targetPaths, string? planOptionName = null)
     {
         var animation = source.LogicalAnimations.FirstOrDefault();
         return OverridePlanner.Create(new OverridePlanRequest
         {
             ModIdentity = modIdentity,
             SourceGroupName = source.GroupName,
-            SourceOptionName = source.OptionName,
+            SourceOptionName = planOptionName ?? source.OptionName,
             SourceAnimationName = animation?.Name ?? SourceGroupName,
             SourceAnimationCommand = animation?.Command ?? string.Empty,
             TargetTimelineKey = target.PrimaryTimelineKey,
@@ -473,6 +534,20 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
         return payload;
     }
 
+    private static string HashRange(byte[] bytes, int offset, int length)
+    {
+        if (offset < 0 || length < 0 || offset > bytes.Length - length)
+            throw new InvalidDataException("PAP integrity range is invalid.");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes.AsSpan(offset, length)));
+    }
+
+    private static void RequestPlayerRedraw(int playerIndex)
+        => OnFramework(() =>
+        {
+            new RedrawObject(Plugin.PluginInterface).Invoke(playerIndex);
+            return true;
+        });
+
     private static JObject RemoveDancyMetadata(JObject metadata)
     {
         var copy = (JObject)metadata.DeepClone();
@@ -546,8 +621,11 @@ internal sealed class DancyTreadmillSelectorRegressionRunner
             Cases = cases,
         };
 
+    private sealed record Scenario(string OptionName, string TargetCommand);
+
     private sealed class RegressionContext
     {
+        public Scenario Scenario { get; init; } = new(string.Empty, string.Empty);
         public string ModDirectory { get; init; } = string.Empty;
         public string ModFolder { get; init; } = string.Empty;
         public string MetaPath { get; init; } = string.Empty;
