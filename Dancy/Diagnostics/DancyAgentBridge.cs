@@ -29,6 +29,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string StandingIdleCandidateOneControlId = "dancy.debug.validate-standing-idle-candidate-one";
     private const string StandingIdleCandidateTwoControlId = "dancy.debug.validate-standing-idle-candidate-two";
     private const string StandingIdleProductionControlId = "dancy.debug.run-standing-idle-production-e2e";
+    private const string Step3PerformanceControlId = "dancy.debug.profile-step3-performance";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -49,6 +50,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastStandingIdleCandidateOne;
     private DancySelfTestResult? lastStandingIdleCandidateTwo;
     private DancySelfTestResult? lastStandingIdleProduction;
+    private DancySelfTestResult? lastStep3PerformanceProfile;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -315,6 +317,24 @@ internal sealed class DancyAgentBridge : IDisposable
             _ => StartStandingIdleProduction());
     }
 
+    public void RegisterStep3PerformanceControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            Step3PerformanceControlId,
+            "Profile Step 3 target work",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastStep3PerformanceProfile?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.step3-performance",
+            _ => StartStep3PerformanceProfile());
+    }
+
     public AgentBridgeUiActionResult StartSelfTest()
     {
         if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
@@ -353,6 +373,46 @@ internal sealed class DancyAgentBridge : IDisposable
         });
 
         return AgentBridgeUiActionResult.Ok("Dancy integration self-test started.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartStep3PerformanceProfile()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.step3-performance", "Step 3 performance profile queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "Step 3 target work is being profiled on the framework thread.");
+                var result = plugin.ProfileStep3TargetCatalog();
+                lastStep3PerformanceProfile = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Step 3 performance profile reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "Step3PerformanceProfileFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["sideEffects"] = "none; only Dancy in-memory resolver and inspection caches were cleared",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Step 3 performance profile crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledStep3PerformanceProfileException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Step 3 performance profile started. It reads game data only and does not write to Penumbra.", operation.Id);
     }
 
     public AgentBridgeUiActionResult StartPushupsWaterRegression()
@@ -861,6 +921,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-active-inspection"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-existing-mod-validation"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-production-e2e"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.step3-performance"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -885,6 +946,7 @@ internal sealed class DancyAgentBridge : IDisposable
         standingIdleCandidateOne = lastStandingIdleCandidateOne,
         standingIdleCandidateTwo = lastStandingIdleCandidateTwo,
         standingIdleProduction = lastStandingIdleProduction,
+        step3PerformanceProfile = lastStep3PerformanceProfile,
         operations = operations.Snapshot(),
         bridge = new
         {

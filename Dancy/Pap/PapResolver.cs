@@ -4,12 +4,16 @@ using System.Collections.Concurrent;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+#if DEBUG
+using Dancy.Diagnostics;
+#endif
 
 namespace Dancy.Pap
 {
     public static class PapResolver
     {
         private static readonly ConcurrentDictionary<string, IReadOnlyList<string>> ResolvedPaths = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, bool> GamePathExistence = new(StringComparer.OrdinalIgnoreCase);
         private static readonly string[] RaceIds =
         {
         "c0101","c0201","c0301","c0401","c0501","c0601",
@@ -48,56 +52,146 @@ namespace Dancy.Pap
         }
 
         public static List<string> ResolvePapFiles(string timelineKey)
+            => BeginResolution(timelineKey).ResolveAll();
+
+        /// <summary>
+        /// Creates a framework-thread-only, incremental resolver. Each call to
+        /// <see cref="PapResolution.TryAdvance"/> performs at most one game-data
+        /// FileExists probe, so callers can apply a frame budget.
+        /// </summary>
+        public static PapResolution BeginResolution(string timelineKey)
         {
             if (string.IsNullOrWhiteSpace(timelineKey))
-                return new List<string>();
+                return PapResolution.Completed(Array.Empty<string>());
 
-            return ResolvedPaths.GetOrAdd(timelineKey.Replace('\\', '/'), ResolvePapFilesCore).ToList();
+            var normalizedKey = timelineKey.Replace('\\', '/');
+#if DEBUG
+            DancyStep3PerformanceTelemetry.RecordPapResolverLookup(ResolvedPaths.ContainsKey(normalizedKey));
+#endif
+            return ResolvedPaths.TryGetValue(normalizedKey, out var cached)
+                ? PapResolution.Completed(cached)
+                : new PapResolution(normalizedKey);
         }
 
         public static void ClearCache()
-            => ResolvedPaths.Clear();
-
-        private static IReadOnlyList<string> ResolvePapFilesCore(string timelineKey)
         {
-            var results = new List<string>();
+            ResolvedPaths.Clear();
+            GamePathExistence.Clear();
+        }
 
-            // globaler Pfad (gibt es selten, aber schadet nicht)
-            string global = $"chara/animation/{timelineKey}.pap";
-            if (Plugin.DataManager.FileExists(global))
-                results.Add(global);
+        public sealed class PapResolution
+        {
+            private readonly string timelineKey;
+            private readonly Queue<string> candidates = new();
+            private readonly List<string> results = new();
+            private bool primaryCandidatesComplete;
+            private bool completed;
 
-            foreach (var race in RaceIds)
+            internal PapResolution(string timelineKey)
             {
-                foreach (var layer in AnimationLayers)
-                {
-                    foreach (var sub in Subfolders)
-                    {
-                        string path = $"chara/human/{race}/animation/{layer}/{sub}{timelineKey}.pap";
-                        if (Plugin.DataManager.FileExists(path))
-                            results.Add(path);
-                    }
-                }
+                this.timelineKey = timelineKey;
+                AddPrimaryCandidates();
             }
 
-            // The current standing-idle ActionTimeline is "normal/idle", while
-            // its player PAPs live in bt_common/resident/idle.pap rather than a
-            // normal/ directory. Keep this narrow fallback data-derived.
-            if (results.Count == 0 && timelineKey.StartsWith("normal/", StringComparison.OrdinalIgnoreCase))
+            private PapResolution(IReadOnlyList<string> resolved)
             {
+                timelineKey = string.Empty;
+                results.AddRange(resolved);
+                completed = true;
+            }
+
+            public bool IsCompleted => completed;
+            public IReadOnlyList<string> Results => completed ? results : Array.Empty<string>();
+
+            internal static PapResolution Completed(IReadOnlyList<string> resolved)
+                => new(resolved);
+
+            /// <summary>Must run on Dalamud's framework thread.</summary>
+            public bool TryAdvance()
+            {
+                if (completed)
+                    return false;
+
+                if (candidates.Count == 0)
+                {
+                    if (!primaryCandidatesComplete)
+                    {
+                        primaryCandidatesComplete = true;
+                        AddStandingIdleFallbackCandidates();
+                        if (candidates.Count == 0)
+                            Complete();
+                        return true;
+                    }
+
+                    Complete();
+                    return true;
+                }
+
+                var path = candidates.Dequeue();
+                if (FileExists(path))
+                    results.Add(path);
+                return true;
+            }
+
+            public List<string> ResolveAll()
+            {
+#if DEBUG
+                using var timing = DancyStep3PerformanceTelemetry.Measure("ResolvePapFiles");
+#endif
+                while (!completed)
+                    TryAdvance();
+                return results.ToList();
+            }
+
+            private void AddPrimaryCandidates()
+            {
+                candidates.Enqueue($"chara/animation/{timelineKey}.pap");
+                foreach (var race in RaceIds)
+                foreach (var layer in AnimationLayers)
+                foreach (var sub in Subfolders)
+                    candidates.Enqueue($"chara/human/{race}/animation/{layer}/{sub}{timelineKey}.pap");
+            }
+
+            private void AddStandingIdleFallbackCandidates()
+            {
+                if (results.Count != 0 || !timelineKey.StartsWith("normal/", StringComparison.OrdinalIgnoreCase))
+                    return;
+
                 var residentFile = timelineKey["normal/".Length..];
                 foreach (var race in RaceIds)
-                {
-                    foreach (var layer in AnimationLayers)
-                    {
-                        var path = $"chara/human/{race}/animation/{layer}/bt_common/resident/{residentFile}.pap";
-                        if (Plugin.DataManager.FileExists(path))
-                            results.Add(path);
-                    }
-                }
+                foreach (var layer in AnimationLayers)
+                    candidates.Enqueue($"chara/human/{race}/animation/{layer}/bt_common/resident/{residentFile}.pap");
             }
 
-            return results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            private void Complete()
+            {
+                if (completed)
+                    return;
+
+                var resolved = results.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var cached = ResolvedPaths.GetOrAdd(timelineKey, resolved);
+                results.Clear();
+                results.AddRange(cached);
+                completed = true;
+            }
+        }
+
+        private static bool FileExists(string path)
+        {
+            if (GamePathExistence.TryGetValue(path, out var cached))
+            {
+#if DEBUG
+                DancyStep3PerformanceTelemetry.RecordGameFileExistsCacheHit();
+#endif
+                return cached;
+            }
+
+#if DEBUG
+            DancyStep3PerformanceTelemetry.RecordGameFileExists();
+            DancyStep3PerformanceTelemetry.RecordGameFileExistsCacheMiss();
+#endif
+            var exists = Plugin.DataManager.FileExists(path);
+            return GamePathExistence.GetOrAdd(path, exists);
         }
     }
 

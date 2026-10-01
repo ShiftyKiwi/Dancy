@@ -5,6 +5,7 @@ using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using System;
 using Dancy.Penumbra;
+using Dancy.Services;
 using Dancy.Windows;
 #if DEBUG
 using Dancy.Diagnostics;
@@ -22,6 +23,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] public static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
@@ -32,6 +34,7 @@ public sealed class Plugin : IDalamudPlugin
     public readonly WindowSystem WindowSystem = new("Dancy");
     private ConfigWindow ConfigWindow { get; init; }
     private MainWindow MainWindow { get; init; }
+    internal TargetInspectionService TargetInspections { get; }
 #if DEBUG
     internal DancyAgentBridge AgentBridge { get; }
 #endif
@@ -41,6 +44,7 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         ECommonsMain.Init(PluginInterface, this);
 
+        TargetInspections = new TargetInspectionService(new DalamudTargetInspectionDataSource());
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
 #if DEBUG
@@ -57,6 +61,7 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw += DrawWindows;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi += ToggleMainUi;
+        Framework.Update += OnFrameworkUpdate;
 
         Core.EmoteLibrary.Initialize();
         TryLoadPenumbraPath();
@@ -67,9 +72,11 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= DrawWindows;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigUi;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleMainUi;
+        Framework.Update -= OnFrameworkUpdate;
         WindowSystem.RemoveAllWindows();
         ConfigWindow.Dispose();
         MainWindow.Dispose();
+        TargetInspections.Dispose();
 #if DEBUG
         AgentBridge.Dispose();
 #endif
@@ -79,6 +86,9 @@ public sealed class Plugin : IDalamudPlugin
     public void ToggleConfigUi() => ConfigWindow.Toggle();
     public void OpenConfigUi() => ConfigWindow.IsOpen = true;
     public void ToggleMainUi() => MainWindow.Toggle();
+#if DEBUG
+    internal Diagnostics.DancySelfTestResult ProfileStep3TargetCatalog() => MainWindow.DebugProfileStep3TargetCatalog();
+#endif
 
     private void TryLoadPenumbraPath()
     {
@@ -104,6 +114,8 @@ public sealed class Plugin : IDalamudPlugin
 #endif
         MainWindow.Toggle();
     }
+
+    private void OnFrameworkUpdate(IFramework _) => TargetInspections.Update();
 
     private void DrawWindows()
     {

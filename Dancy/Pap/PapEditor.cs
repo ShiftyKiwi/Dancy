@@ -8,6 +8,9 @@ using System.Text;
 using System.Text.Json;
 using Dancy.Domain;
 using ECommons.DalamudServices;
+#if DEBUG
+using Dancy.Diagnostics;
+#endif
 using VfxEditor.TmbFormat;
 using VfxEditor.TmbFormat.Entries;
 
@@ -212,11 +215,33 @@ public static class PapEditor
 
     public static PapFileInspector.PapFileInspection InspectTargetPap(string defaultPath)
     {
+#if DEBUG
+        DancyStep3PerformanceTelemetry.RecordTargetPapInspection();
+        using var timing = DancyStep3PerformanceTelemetry.Measure("InspectTargetPap");
+#endif
+        return InspectTargetPapBytes(ReadTargetPapBytes(defaultPath));
+    }
+
+    /// <summary>Must run on the Dalamud framework thread.</summary>
+    public static byte[] ReadTargetPapBytes(string defaultPath)
+    {
+#if DEBUG
+        DancyStep3PerformanceTelemetry.RecordTargetPapRead();
+#endif
         var defaultFile = Plugin.DataManager.GetFile(defaultPath);
         if (defaultFile == null)
             throw new FileNotFoundException($"File {defaultPath} was not found in game data.");
 
-        return PapFileInspector.Inspect(ReadAllBytes(defaultFile.Reader.BaseStream));
+        return ReadAllBytes(defaultFile.Reader.BaseStream);
+    }
+
+    /// <summary>Pure managed PAP parsing for already-materialized game bytes.</summary>
+    public static PapFileInspector.PapFileInspection InspectTargetPapBytes(byte[] bytes)
+    {
+#if DEBUG
+        DancyStep3PerformanceTelemetry.RecordTargetPapInspection();
+#endif
+        return PapFileInspector.Inspect(bytes);
     }
 
     private static void EnsureStandingIdleCapability()

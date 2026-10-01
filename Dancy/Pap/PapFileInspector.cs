@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
+#if DEBUG
+using Dancy.Diagnostics;
+#endif
 
 namespace Dancy.Pap;
 
@@ -48,6 +51,9 @@ public static class PapFileInspector
     public static PapFileInspection InspectFile(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+#if DEBUG
+        DancyStep3PerformanceTelemetry.RecordSourcePapFileRead();
+#endif
         return Inspect(ReadFileWithRetry(path));
     }
 

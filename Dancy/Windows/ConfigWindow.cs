@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(420, 670);
+        Size = new Vector2(420, 700);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -61,6 +61,15 @@ public class ConfigWindow : Window, IDisposable
         var selfTestSummary = plugin.AgentBridge.LastSelfTestSummary;
         if (!string.IsNullOrWhiteSpace(selfTestSummary))
             ImGui.TextWrapped(selfTestSummary);
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var profiledStep3 = ImGui.Button("Profile Step 3 target work");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterStep3PerformanceControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (profiledStep3)
+            plugin.AgentBridge.StartStep3PerformanceProfile();
 
         if (!canRunSelfTest)
             ImGui.BeginDisabled();
