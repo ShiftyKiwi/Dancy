@@ -44,7 +44,11 @@ public sealed class Plugin : IDalamudPlugin
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         ECommonsMain.Init(PluginInterface, this);
 
+#if DEBUG
+        TargetInspections = new TargetInspectionService(new DalamudTargetInspectionDataSource(), pendingWarning: message => Log.Warning(message));
+#else
         TargetInspections = new TargetInspectionService(new DalamudTargetInspectionDataSource());
+#endif
         ConfigWindow = new ConfigWindow(this);
         MainWindow = new MainWindow(this);
 #if DEBUG

@@ -79,6 +79,9 @@ namespace Dancy.Pap
             GamePathExistence.Clear();
         }
 
+        public static PapResolverCacheStatistics GetCacheStatistics()
+            => new(ResolvedPaths.Count, GamePathExistence.Count);
+
         public sealed class PapResolution
         {
             private readonly string timelineKey;
@@ -86,6 +89,9 @@ namespace Dancy.Pap
             private readonly List<string> results = new();
             private bool primaryCandidatesComplete;
             private bool completed;
+            private int fileExistsRequests;
+            private int fileExistsCacheHits;
+            private int underlyingFileExistsProbes;
 
             internal PapResolution(string timelineKey)
             {
@@ -102,6 +108,9 @@ namespace Dancy.Pap
 
             public bool IsCompleted => completed;
             public IReadOnlyList<string> Results => completed ? results : Array.Empty<string>();
+            public int FileExistsRequests => fileExistsRequests;
+            public int FileExistsCacheHits => fileExistsCacheHits;
+            public int UnderlyingFileExistsProbes => underlyingFileExistsProbes;
 
             internal static PapResolution Completed(IReadOnlyList<string> resolved)
                 => new(resolved);
@@ -128,7 +137,13 @@ namespace Dancy.Pap
                 }
 
                 var path = candidates.Dequeue();
-                if (FileExists(path))
+                var exists = FileExists(path, out var cacheHit);
+                fileExistsRequests++;
+                if (cacheHit)
+                    fileExistsCacheHits++;
+                else
+                    underlyingFileExistsProbes++;
+                if (exists)
                     results.Add(path);
                 return true;
             }
@@ -176,16 +191,18 @@ namespace Dancy.Pap
             }
         }
 
-        private static bool FileExists(string path)
+        private static bool FileExists(string path, out bool cacheHit)
         {
             if (GamePathExistence.TryGetValue(path, out var cached))
             {
+                cacheHit = true;
 #if DEBUG
                 DancyStep3PerformanceTelemetry.RecordGameFileExistsCacheHit();
 #endif
                 return cached;
             }
 
+            cacheHit = false;
 #if DEBUG
             DancyStep3PerformanceTelemetry.RecordGameFileExists();
             DancyStep3PerformanceTelemetry.RecordGameFileExistsCacheMiss();
@@ -194,6 +211,8 @@ namespace Dancy.Pap
             return GamePathExistence.GetOrAdd(path, exists);
         }
     }
+
+    public sealed record PapResolverCacheStatistics(int ResolvedTimelineCount, int UniqueGamePathCount);
 
 
 }

@@ -63,6 +63,7 @@ namespace Dancy.Windows
         private string? selectedCompatiblePhysicalSourceKey;
         private string? additionalMappingError;
         private TargetCatalogPresentationCache<LuminaEmote>? targetCatalog;
+        private string? lastTargetInspectionViewKey;
 #if DEBUG
         private long step3TransitionStartedAt;
 #endif
@@ -1077,7 +1078,10 @@ namespace Dancy.Windows
 
             var isSearchingTargets = !string.IsNullOrWhiteSpace(emoteSearch);
             var results = GetTargetCatalogResults(targetSelectionCategory, emoteSearch);
-            RequestVisibleTargetInspections(results);
+            RequestVisibleTargetInspections(
+                results,
+                isSearchingTargets ? TargetInspectionPriority.VisibleSearch : TargetInspectionPriority.VisibleCurrentTab,
+                $"{targetSelectionCategory}|{emoteSearch}");
 
             if (results.Count == 0)
             {
@@ -1119,18 +1123,20 @@ namespace Dancy.Windows
                     if (hasTargetStatus && !targetStatus!.IsSupported && isSelected)
                     {
                         selectedReplacementEmote = null;
-                        InvalidatePreviewCompatibility();
+                        InvalidatePreviewForTargetChange();
                         isSelected = false;
                     }
 
-                    if (!hasTargetStatus || !targetStatus!.IsSupported)
+                    var canSelect = !hasTargetStatus || targetStatus!.IsSupported;
+                    if (!canSelect)
                         ImGui.BeginDisabled();
                     if (ImGui.Selectable(label, isSelected, ImGuiSelectableFlags.SpanAllColumns))
                     {
                         selectedReplacementEmote = emote;
-                        InvalidatePreviewCompatibility();
+                        InvalidatePreviewForTargetChange();
+                        plugin.TargetInspections.RequestTarget(CreateTargetInspectionRequest(emote), TargetInspectionPriority.Selected);
                     }
-                    if (!hasTargetStatus || !targetStatus!.IsSupported)
+                    if (!canSelect)
                         ImGui.EndDisabled();
 
                     if (!string.IsNullOrWhiteSpace(emote.Command))
@@ -1168,6 +1174,7 @@ namespace Dancy.Windows
 
             if (selectedReplacementEmote != null)
             {
+                plugin.TargetInspections.RequestTarget(CreateTargetInspectionRequest(selectedReplacementEmote), TargetInspectionPriority.Selected);
                 if (string.IsNullOrWhiteSpace(selectedModFolder))
                 {
                     ImGui.TextDisabled("Waiting for the selected source mod to finish loading...");
@@ -1331,10 +1338,15 @@ namespace Dancy.Windows
 
         private void InvalidatePreviewCompatibility()
         {
+            InvalidatePreviewForTargetChange();
+            plugin.TargetInspections.InvalidateSourceCompatibility();
+        }
+
+        private void InvalidatePreviewForTargetChange()
+        {
             previewPlan = null;
             previewCompatibility = null;
             previewSourceSelections.Clear();
-            plugin.TargetInspections.InvalidateSourceCompatibility();
         }
 
         private void EnsureSelectedSourceGamePaths(RemappableOption source)
@@ -1438,10 +1450,20 @@ namespace Dancy.Windows
                     TargetSemantics.DisplayName(emote.Context))));
         }
 
-        private void RequestVisibleTargetInspections(IReadOnlyList<TargetCatalogPresentation<LuminaEmote>> results)
+        private void RequestVisibleTargetInspections(
+            IReadOnlyList<TargetCatalogPresentation<LuminaEmote>> results,
+            TargetInspectionPriority priority = TargetInspectionPriority.VisibleCurrentTab,
+            string? viewKey = null)
         {
+            if (viewKey is not null)
+            {
+                if (string.Equals(lastTargetInspectionViewKey, viewKey, StringComparison.Ordinal))
+                    return;
+                lastTargetInspectionViewKey = viewKey;
+            }
+
             foreach (var result in results)
-                plugin.TargetInspections.RequestTarget(CreateTargetInspectionRequest(result.Target));
+                plugin.TargetInspections.RequestTarget(CreateTargetInspectionRequest(result.Target), priority);
         }
 
         private static TargetInspectionRequest CreateTargetInspectionRequest(LuminaEmote target)
@@ -1456,6 +1478,7 @@ namespace Dancy.Windows
         private void InvalidateTargetCatalog()
         {
             targetCatalog = null;
+            lastTargetInspectionViewKey = null;
             plugin.TargetInspections.InvalidateTargetCatalog();
             PapResolver.ClearCache();
         }
@@ -1560,7 +1583,7 @@ namespace Dancy.Windows
             InvalidateTargetCatalog();
             DancyStep3PerformanceTelemetry.Reset();
             var results = GetTargetCatalogResults(TargetSelectionCategory.LoopingEmotes, string.Empty);
-            RequestVisibleTargetInspections(results);
+            RequestVisibleTargetInspections(results, TargetInspectionPriority.VisibleCurrentTab, "LoopingEmotes|");
             var allocatedBefore = GC.GetTotalAllocatedBytes(false);
             var stopwatch = Stopwatch.StartNew();
             try
@@ -1568,7 +1591,7 @@ namespace Dancy.Windows
                 for (var frame = 0; frame < 120; ++frame)
                 {
                     var visible = GetTargetCatalogResults(TargetSelectionCategory.LoopingEmotes, string.Empty);
-                    RequestVisibleTargetInspections(visible);
+                    RequestVisibleTargetInspections(visible, TargetInspectionPriority.VisibleCurrentTab, "LoopingEmotes|");
                 }
                 var snapshot = DancyStep3PerformanceTelemetry.Snapshot();
                 var presentationOnly = snapshot.TargetPapReads == 0

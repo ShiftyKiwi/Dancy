@@ -30,6 +30,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private const string StandingIdleCandidateTwoControlId = "dancy.debug.validate-standing-idle-candidate-two";
     private const string StandingIdleProductionControlId = "dancy.debug.run-standing-idle-production-e2e";
     private const string Step3PerformanceControlId = "dancy.debug.profile-step3-performance";
+    private const string TargetInspectionPriorityControlId = "dancy.debug.run-target-inspection-priority-regression";
     private readonly Plugin plugin;
     private readonly AgentBridgeUiReviewRegistry reviewRegistry = new();
     private readonly AgentBridgeSurfaceRegistry surfaceRegistry = new();
@@ -51,6 +52,7 @@ internal sealed class DancyAgentBridge : IDisposable
     private DancySelfTestResult? lastStandingIdleCandidateTwo;
     private DancySelfTestResult? lastStandingIdleProduction;
     private DancySelfTestResult? lastStep3PerformanceProfile;
+    private DancySelfTestResult? lastTargetInspectionPriorityRegression;
 
     public DancyAgentBridge(Plugin plugin)
     {
@@ -335,6 +337,24 @@ internal sealed class DancyAgentBridge : IDisposable
             _ => StartStep3PerformanceProfile());
     }
 
+    public void RegisterTargetInspectionPriorityControl(Vector2 min, Vector2 max, bool enabled)
+    {
+        reviewRegistry.Register(
+            TargetInspectionPriorityControlId,
+            "Run Step 3 Cheer Wave priority regression",
+            AgentBridgeUiControlKind.Button,
+            min,
+            max,
+            enabled,
+            selected: false,
+            value: lastTargetInspectionPriorityRegression?.Summary,
+            arguments: null,
+            surfaceId: ReviewSurfaceId,
+            mutating: false,
+            completionOperationKind: "dancy.debug.target-inspection-priority",
+            _ => StartTargetInspectionPriorityRegression());
+    }
+
     public AgentBridgeUiActionResult StartSelfTest()
     {
         if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
@@ -413,6 +433,47 @@ internal sealed class DancyAgentBridge : IDisposable
         });
 
         return AgentBridgeUiActionResult.Ok("Step 3 performance profile started. It reads game data only and does not write to Penumbra.", operation.Id);
+    }
+
+    public AgentBridgeUiActionResult StartTargetInspectionPriorityRegression()
+    {
+        if (Interlocked.CompareExchange(ref selfTestRunning, 1, 0) != 0)
+            return AgentBridgeUiActionResult.Fail("A Dancy integration test is already running.");
+
+        var operation = operations.Begin("dancy.debug.target-inspection-priority", "Step 3 Cheer Wave priority regression queued.");
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                operations.Update(operation.Id, AgentBridgeOperationState.Running, "The read-only Cheer Wave queue-priority regression is running against current game data.");
+                var result = new DancyTargetInspectionPriorityRunner().Run();
+                lastTargetInspectionPriorityRegression = result;
+                operations.Update(
+                    operation.Id,
+                    result.Passed ? AgentBridgeOperationState.Succeeded : AgentBridgeOperationState.Failed,
+                    result.Passed ? result.Summary : "Step 3 Cheer Wave priority regression reported failures.",
+                    current: result.Cases.Count(test => test.Status == DancySelfTestStatus.Passed),
+                    total: result.Cases.Count,
+                    errorCode: result.Passed ? null : "TargetInspectionPriorityRegressionFailed",
+                    postconditions: new System.Collections.Generic.Dictionary<string, string>
+                    {
+                        ["summary"] = result.Summary,
+                        ["penumbraMutated"] = "false",
+                        ["dancyPersistentStateMutated"] = "false",
+                    });
+            }
+            catch (Exception exception)
+            {
+                Svc.Log.Error(exception, "[Dancy] Step 3 Cheer Wave priority regression crashed.");
+                operations.Update(operation.Id, AgentBridgeOperationState.Failed, exception.Message, errorCode: "UnhandledTargetInspectionPriorityRegressionException");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref selfTestRunning, 0);
+            }
+        });
+
+        return AgentBridgeUiActionResult.Ok("Step 3 Cheer Wave priority regression started. It uses a temporary in-memory service and does not change Penumbra or Dancy options.", operation.Id);
     }
 
     public AgentBridgeUiActionResult StartPushupsWaterRegression()
@@ -922,6 +983,7 @@ internal sealed class DancyAgentBridge : IDisposable
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-existing-mod-validation"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.standing-idle-production-e2e"),
             new AgentBridgeCapabilityDescriptor("dancy.debug.step3-performance"),
+            new AgentBridgeCapabilityDescriptor("dancy.debug.target-inspection-priority"),
         ],
         ReviewSurfaces: surfaceRegistry.Snapshot(),
         CaptureSurfaces: Array.Empty<AgentBridgeCaptureSurfaceDescriptor>(),
@@ -947,6 +1009,8 @@ internal sealed class DancyAgentBridge : IDisposable
         standingIdleCandidateTwo = lastStandingIdleCandidateTwo,
         standingIdleProduction = lastStandingIdleProduction,
         step3PerformanceProfile = lastStep3PerformanceProfile,
+        targetInspectionPriorityRegression = lastTargetInspectionPriorityRegression,
+        targetInspection = plugin.TargetInspections.GetDebugState(),
         operations = operations.Snapshot(),
         bridge = new
         {

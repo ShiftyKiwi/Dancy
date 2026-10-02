@@ -20,6 +20,9 @@ internal sealed class DalamudTargetInspectionDataSource : ITargetInspectionDataS
     {
         public bool IsCompleted => resolution.IsCompleted;
         public IReadOnlyList<string> Results => resolution.Results;
+        public int FileExistsRequests => resolution.FileExistsRequests;
+        public int FileExistsCacheHits => resolution.FileExistsCacheHits;
+        public int UnderlyingFileExistsProbes => resolution.UnderlyingFileExistsProbes;
         public bool TryAdvance() => resolution.TryAdvance();
     }
 }

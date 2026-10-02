@@ -20,7 +20,7 @@ public class ConfigWindow : Window, IDisposable
                 ImGuiWindowFlags.NoScrollWithMouse;
 
 #if DEBUG
-        Size = new Vector2(420, 700);
+        Size = new Vector2(420, 730);
 #else
         Size = new Vector2(360, 245);
 #endif
@@ -70,6 +70,15 @@ public class ConfigWindow : Window, IDisposable
         plugin.AgentBridge.RegisterStep3PerformanceControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
         if (profiledStep3)
             plugin.AgentBridge.StartStep3PerformanceProfile();
+
+        if (!canRunSelfTest)
+            ImGui.BeginDisabled();
+        var ranTargetInspectionPriorityRegression = ImGui.Button("Run Step 3 Cheer Wave priority regression");
+        if (!canRunSelfTest)
+            ImGui.EndDisabled();
+        plugin.AgentBridge.RegisterTargetInspectionPriorityControl(ImGui.GetItemRectMin(), ImGui.GetItemRectMax(), canRunSelfTest);
+        if (ranTargetInspectionPriorityRegression)
+            plugin.AgentBridge.StartTargetInspectionPriorityRegression();
 
         if (!canRunSelfTest)
             ImGui.BeginDisabled();

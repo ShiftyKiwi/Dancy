@@ -12,11 +12,14 @@ namespace Dancy.Diagnostics;
 /// </summary>
 internal static class DancyStep3PerformanceTelemetry
 {
+    private const int TimingSampleLimit = 4096;
+
     private sealed class TimingCounter
     {
         public long Calls;
         public long TotalTicks;
         public long MaxTicks;
+        public List<long> Samples { get; } = [];
     }
 
     private static readonly object Gate = new();
@@ -37,6 +40,12 @@ internal static class DancyStep3PerformanceTelemetry
     private static long targetInspectionRequests;
     private static long targetInspectionExecutions;
     private static long targetInspectionDeduplicated;
+    private static long targetInspectionAcquisitionBudgetOverruns;
+    private static long targetInspectionAcquisitionStepCapLimitedUpdates;
+    private static long targetInspectionAcquisitionEmergencyCapHits;
+    private static long targetInspectionAcquisitionFrameHitchesOver16Milliseconds;
+    private static long targetInspectionAcquisitionFrameHitchesOver50Milliseconds;
+    private static long targetInspectionAcquisitionFrameHitchesOver100Milliseconds;
 
     public static TimingScope Measure(string stage) => new(stage, Stopwatch.GetTimestamp());
 
@@ -61,6 +70,12 @@ internal static class DancyStep3PerformanceTelemetry
             targetInspectionRequests = 0;
             targetInspectionExecutions = 0;
             targetInspectionDeduplicated = 0;
+            targetInspectionAcquisitionBudgetOverruns = 0;
+            targetInspectionAcquisitionStepCapLimitedUpdates = 0;
+            targetInspectionAcquisitionEmergencyCapHits = 0;
+            targetInspectionAcquisitionFrameHitchesOver16Milliseconds = 0;
+            targetInspectionAcquisitionFrameHitchesOver50Milliseconds = 0;
+            targetInspectionAcquisitionFrameHitchesOver100Milliseconds = 0;
         }
     }
 
@@ -87,6 +102,27 @@ internal static class DancyStep3PerformanceTelemetry
     public static void RecordTargetInspectionExecuted() => System.Threading.Interlocked.Increment(ref targetInspectionExecutions);
     public static void RecordTargetInspectionDeduplicated() => System.Threading.Interlocked.Increment(ref targetInspectionDeduplicated);
 
+    public static void RecordTargetInspectionAcquisitionUpdate(
+        TimeSpan elapsed,
+        TimeSpan budget,
+        bool limitedByStepCap,
+        bool hitEmergencyStepCap)
+    {
+        RecordTiming("TargetInspectionAcquisitionUpdate", (long)(elapsed.TotalSeconds * Stopwatch.Frequency));
+        if (elapsed > budget)
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionBudgetOverruns);
+        if (limitedByStepCap)
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionStepCapLimitedUpdates);
+        if (hitEmergencyStepCap)
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionEmergencyCapHits);
+        if (elapsed > TimeSpan.FromMilliseconds(16.7))
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionFrameHitchesOver16Milliseconds);
+        if (elapsed > TimeSpan.FromMilliseconds(50))
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionFrameHitchesOver50Milliseconds);
+        if (elapsed > TimeSpan.FromMilliseconds(100))
+            System.Threading.Interlocked.Increment(ref targetInspectionAcquisitionFrameHitchesOver100Milliseconds);
+    }
+
     public static DancyStep3PerformanceSnapshot Snapshot()
     {
         lock (Gate)
@@ -108,12 +144,19 @@ internal static class DancyStep3PerformanceTelemetry
                 targetInspectionRequests,
                 targetInspectionExecutions,
                 targetInspectionDeduplicated,
+                targetInspectionAcquisitionBudgetOverruns,
+                targetInspectionAcquisitionStepCapLimitedUpdates,
+                targetInspectionAcquisitionEmergencyCapHits,
+                targetInspectionAcquisitionFrameHitchesOver16Milliseconds,
+                targetInspectionAcquisitionFrameHitchesOver50Milliseconds,
+                targetInspectionAcquisitionFrameHitchesOver100Milliseconds,
                 Timings.ToDictionary(
                     pair => pair.Key,
                     pair => new DancyStep3TimingSnapshot(
                         pair.Value.Calls,
                         ToMilliseconds(pair.Value.TotalTicks),
-                        ToMilliseconds(pair.Value.MaxTicks)),
+                        ToMilliseconds(pair.Value.MaxTicks),
+                        MedianMilliseconds(pair.Value.Samples)),
                     StringComparer.Ordinal));
         }
     }
@@ -131,6 +174,8 @@ internal static class DancyStep3PerformanceTelemetry
             timing.Calls++;
             timing.TotalTicks += elapsedTicks;
             timing.MaxTicks = Math.Max(timing.MaxTicks, elapsedTicks);
+            if (timing.Samples.Count < TimingSampleLimit)
+                timing.Samples.Add(elapsedTicks);
         }
     }
 
@@ -138,6 +183,19 @@ internal static class DancyStep3PerformanceTelemetry
         => RecordTiming(stage, Stopwatch.GetTimestamp() - startedAt);
 
     private static double ToMilliseconds(long ticks) => ticks * 1000d / Stopwatch.Frequency;
+
+    private static double MedianMilliseconds(IReadOnlyList<long> samples)
+    {
+        if (samples.Count == 0)
+            return 0;
+
+        var ordered = samples.OrderBy(value => value).ToArray();
+        var middle = ordered.Length / 2;
+        var ticks = ordered.Length % 2 == 0
+            ? (ordered[middle - 1] + ordered[middle]) / 2d
+            : ordered[middle];
+        return ticks * 1000d / Stopwatch.Frequency;
+    }
 
     internal readonly struct TimingScope : IDisposable
     {
@@ -154,7 +212,10 @@ internal static class DancyStep3PerformanceTelemetry
     }
 }
 
-internal sealed record DancyStep3TimingSnapshot(long Calls, double TotalMilliseconds, double MaxMilliseconds);
+internal sealed record DancyStep3TimingSnapshot(long Calls, double TotalMilliseconds, double MaxMilliseconds, double MedianMilliseconds)
+{
+    public double AverageMilliseconds => Calls == 0 ? 0 : TotalMilliseconds / Calls;
+}
 
 internal sealed record DancyStep3PerformanceSnapshot(
     long PapResolverCacheHits,
@@ -173,6 +234,12 @@ internal sealed record DancyStep3PerformanceSnapshot(
     long TargetInspectionRequests,
     long TargetInspectionExecutions,
     long TargetInspectionDeduplicated,
+    long TargetInspectionAcquisitionBudgetOverruns,
+    long TargetInspectionAcquisitionStepCapLimitedUpdates,
+    long TargetInspectionAcquisitionEmergencyCapHits,
+    long TargetInspectionAcquisitionFrameHitchesOver16Milliseconds,
+    long TargetInspectionAcquisitionFrameHitchesOver50Milliseconds,
+    long TargetInspectionAcquisitionFrameHitchesOver100Milliseconds,
     IReadOnlyDictionary<string, DancyStep3TimingSnapshot> Timings)
 {
     public string Describe() =>

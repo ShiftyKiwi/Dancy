@@ -22,6 +22,16 @@ public enum TargetInspectionState
     Failed,
 }
 
+/// <summary>Higher-priority target work is always acquired before lower-priority prewarming.</summary>
+public enum TargetInspectionPriority
+{
+    Selected = 0,
+    VisibleSearch = 1,
+    VisibleCurrentTab = 2,
+    CurrentTab = 3,
+    Background = 4,
+}
+
 /// <summary>Source-independent target identity. It is safe to retain across source changes.</summary>
 public sealed record TargetInspectionRequest(string Id, string TimelineKey, string DisplayName, bool IsStandingIdle);
 
@@ -47,11 +57,49 @@ public sealed record TargetCompatibilitySnapshot(
     PapCompatibilityResult? Compatibility = null,
     IReadOnlyDictionary<string, TargetSourceSelectionPreview>? SourceSelections = null);
 
+/// <summary>Debug-only presentation of one target's scheduler lifecycle.</summary>
+public sealed record TargetInspectionDebugEntry(
+    string Id,
+    string DisplayName,
+    TargetInspectionPriority Priority,
+    int? QueuePosition,
+    string AcquisitionState,
+    string AnalysisState,
+    long Generation,
+    DateTimeOffset RequestedAtUtc,
+    DateTimeOffset? CompletedAtUtc,
+    DateTimeOffset? PublishedAtUtc,
+    int FileExistsRequests,
+    int FileExistsCacheHits,
+    int UnderlyingFileExistsProbes);
+
+/// <summary>Debug-only scheduler state for diagnosing deferred inspection progress.</summary>
+public sealed record TargetInspectionServiceDebugState(
+    long TargetGeneration,
+    long SourceGeneration,
+    int PendingRequests,
+    int FrameworkAcquisitionQueueLength,
+    IReadOnlyList<int> QueueLengthsByPriority,
+    int ActiveBackgroundAnalysis,
+    int CompletedResults,
+    int FailedResults,
+    long DiscardedStaleResults,
+    string? ActiveAcquisition,
+    IReadOnlyList<string> ActiveAnalysis,
+    TimeSpan? OldestPendingAge,
+    DateTimeOffset? LastSuccessfulProgressUtc,
+    long FrameworkUpdateCallbacks,
+    long AcquisitionSteps,
+    IReadOnlyList<TargetInspectionDebugEntry> Targets);
+
 /// <summary>One framework-thread step of game-data path acquisition.</summary>
 public interface IIncrementalTargetPathResolution
 {
     bool IsCompleted { get; }
     IReadOnlyList<string> Results { get; }
+    int FileExistsRequests { get; }
+    int FileExistsCacheHits { get; }
+    int UnderlyingFileExistsProbes { get; }
     bool TryAdvance();
 }
 
@@ -70,27 +118,45 @@ public interface ITargetInspectionDataSource
 public sealed class TargetInspectionService : IDisposable
 {
     private static readonly TimeSpan FrameworkBudget = TimeSpan.FromMilliseconds(2);
-    private const int MaximumFrameworkStepsPerUpdate = 2;
+    // The deadline is the normal limit. This only prevents a faulty zero-cost
+    // resolver from monopolizing a frame if its clock never advances.
+    private const int EmergencyMaximumFrameworkStepsPerUpdate = 16 * 1024;
+    private const int PendingWarningSeconds = 5;
+    private const int PendingAbnormalSeconds = 15;
 
     private readonly object gate = new();
-    private readonly Queue<TargetWorkItem> pendingTargetWork = new();
-    private readonly HashSet<string> pendingTargetIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LinkedList<TargetWorkItem>[] pendingTargetWork = CreatePriorityQueues();
+    private readonly Dictionary<string, LinkedListNode<TargetWorkItem>> pendingTargetNodes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TargetWorkItem> targetWorkById = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> activeBackgroundAnalysis = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TargetStructureSnapshot> targetStructures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TargetCompatibilitySnapshot> compatibilityByKey = new(StringComparer.Ordinal);
     private readonly ConcurrentQueue<CompletedTargetWork> completedTargetWork = new();
     private readonly ConcurrentQueue<CompletedCompatibilityWork> completedCompatibilityWork = new();
     private readonly ITargetInspectionDataSource dataSource;
     private readonly Func<Action, CancellationToken, Task> startWorker;
+    private readonly Action<string>? pendingWarning;
     private CancellationTokenSource targetCancellation = new();
     private CancellationTokenSource compatibilityCancellation = new();
     private long targetGeneration;
     private long sourceGeneration;
+    private long discardedStaleResults;
+    private long frameworkUpdateCallbacks;
+    private long acquisitionSteps;
+    private int completedResults;
+    private int failedResults;
+    private DateTimeOffset? lastSuccessfulProgressUtc;
+    private TargetWorkItem? activeAcquisition;
     private bool disposed;
 
-    public TargetInspectionService(ITargetInspectionDataSource dataSource, Func<Action, CancellationToken, Task>? startWorker = null)
+    public TargetInspectionService(
+        ITargetInspectionDataSource dataSource,
+        Func<Action, CancellationToken, Task>? startWorker = null,
+        Action<string>? pendingWarning = null)
     {
         this.dataSource = dataSource ?? throw new ArgumentNullException(nameof(dataSource));
         this.startWorker = startWorker ?? ((action, cancellationToken) => Task.Run(action, cancellationToken));
+        this.pendingWarning = pendingWarning;
     }
 
     public int PendingTargetCount
@@ -102,7 +168,7 @@ public sealed class TargetInspectionService : IDisposable
         }
     }
 
-    public void RequestTarget(TargetInspectionRequest request)
+    public void RequestTarget(TargetInspectionRequest request, TargetInspectionPriority priority = TargetInspectionPriority.Background)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.Id);
         ArgumentException.ThrowIfNullOrWhiteSpace(request.TimelineKey);
@@ -110,8 +176,9 @@ public sealed class TargetInspectionService : IDisposable
         lock (gate)
         {
             ThrowIfDisposed();
-            if (targetStructures.ContainsKey(request.Id) || !pendingTargetIds.Add(request.Id))
+            if (targetStructures.ContainsKey(request.Id))
             {
+                PromotePendingWork(request.Id, priority);
 #if DEBUG
                 DancyStep3PerformanceTelemetry.RecordTargetInspectionDeduplicated();
 #endif
@@ -119,10 +186,62 @@ public sealed class TargetInspectionService : IDisposable
             }
 
             targetStructures[request.Id] = new TargetStructureSnapshot(TargetInspectionState.Pending, Array.Empty<string>(), Array.Empty<PapTargetInspection>());
-            pendingTargetWork.Enqueue(new TargetWorkItem(request, targetGeneration, targetCancellation.Token));
+            var work = new TargetWorkItem(request, priority, targetGeneration, targetCancellation.Token);
+            targetWorkById.Add(request.Id, work);
+            EnqueuePendingWork(work);
 #if DEBUG
             DancyStep3PerformanceTelemetry.RecordTargetInspectionRequested();
 #endif
+        }
+    }
+
+    public TargetInspectionServiceDebugState GetDebugState()
+    {
+        lock (gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var queuePositions = GetQueuePositions();
+            var pending = targetStructures
+                .Where(pair => pair.Value.State == TargetInspectionState.Pending)
+                .Select(pair => targetWorkById.TryGetValue(pair.Key, out var work) ? work : null)
+                .Where(work => work is not null)
+                .Cast<TargetWorkItem>()
+                .ToList();
+            var oldest = pending.Count == 0 ? (TimeSpan?)null : now - pending.Min(work => work.RequestedAtUtc);
+            var targets = targetWorkById.Values
+                .OrderBy(work => work.RequestedAtUtc)
+                .Select(work => new TargetInspectionDebugEntry(
+                    work.Request.Id,
+                    work.Request.DisplayName,
+                    work.Priority,
+                    queuePositions.GetValueOrDefault(work.Request.Id),
+                    work.AcquisitionState,
+                    work.AnalysisState,
+                    work.Generation,
+                    work.RequestedAtUtc,
+                    work.CompletedAtUtc,
+                    work.PublishedAtUtc,
+                    work.Resolver?.FileExistsRequests ?? 0,
+                    work.Resolver?.FileExistsCacheHits ?? 0,
+                    work.Resolver?.UnderlyingFileExistsProbes ?? 0))
+                .ToList();
+            return new TargetInspectionServiceDebugState(
+                targetGeneration,
+                sourceGeneration,
+                pending.Count,
+                pendingTargetNodes.Count,
+                pendingTargetWork.Select(queue => queue.Count).ToList(),
+                activeBackgroundAnalysis.Count,
+                completedResults,
+                failedResults,
+                discardedStaleResults,
+                activeAcquisition?.Request.Id,
+                activeBackgroundAnalysis.OrderBy(id => id, StringComparer.OrdinalIgnoreCase).ToList(),
+                oldest,
+                lastSuccessfulProgressUtc,
+                frameworkUpdateCallbacks,
+                acquisitionSteps,
+                targets);
         }
     }
 
@@ -141,8 +260,9 @@ public sealed class TargetInspectionService : IDisposable
             targetCancellation.Dispose();
             targetCancellation = new CancellationTokenSource();
             targetGeneration++;
-            pendingTargetWork.Clear();
-            pendingTargetIds.Clear();
+            ClearPendingTargetWork();
+            targetWorkById.Clear();
+            activeBackgroundAnalysis.Clear();
             targetStructures.Clear();
         }
     }
@@ -177,7 +297,23 @@ public sealed class TargetInspectionService : IDisposable
             var generation = sourceGeneration;
             var cancellationToken = compatibilityCancellation.Token;
             var immutableTargetInspections = target.Inspections.ToArray();
-            _ = startWorker(() => AnalyzeCompatibility(key, generation, cancellationToken, modFolder, plan, immutableTargetInspections), cancellationToken);
+            try
+            {
+                ObserveCompatibilityWorker(
+                    startWorker(() => AnalyzeCompatibility(key, generation, cancellationToken, modFolder, plan, immutableTargetInspections), cancellationToken),
+                    key,
+                    generation,
+                    cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                completedCompatibilityWork.Enqueue(new CompletedCompatibilityWork(
+                    key,
+                    generation,
+                    new TargetCompatibilitySnapshot(
+                        TargetInspectionState.Failed,
+                        new PapCompatibilityResult(PapCompatibilityStatus.Unknown, $"Dancy could not start compatibility inspection: {exception.Message}"))));
+            }
         }
     }
 
@@ -193,37 +329,79 @@ public sealed class TargetInspectionService : IDisposable
         if (disposed)
             return;
 
+        lock (gate)
+            frameworkUpdateCallbacks++;
         PublishCompletedWork();
         var started = Stopwatch.GetTimestamp();
         var processedSteps = 0;
-        while (processedSteps < MaximumFrameworkStepsPerUpdate && Elapsed(started) < FrameworkBudget)
+        while (processedSteps < EmergencyMaximumFrameworkStepsPerUpdate && Elapsed(started) < FrameworkBudget)
         {
             TargetWorkItem? work;
             lock (gate)
             {
-                if (!pendingTargetWork.TryDequeue(out work))
+                work = DequeuePendingWork();
+                if (work is null)
                     break;
-                pendingTargetIds.Remove(work.Request.Id);
+                activeAcquisition = work;
             }
 
-            if (work.CancellationToken.IsCancellationRequested || work.Generation != Volatile.Read(ref targetGeneration))
-                continue;
-
-            var completed = AdvanceTargetWork(work);
-            processedSteps++;
-            if (completed)
-                StartTargetAnalysis(work);
-            else
+            try
             {
+                if (work.CancellationToken.IsCancellationRequested || work.Generation != Volatile.Read(ref targetGeneration))
+                {
+                    RecordDiscardedTargetWork(work);
+                    continue;
+                }
+
+#if DEBUG
+                var stepStarted = Stopwatch.GetTimestamp();
+#endif
+                var completed = AdvanceTargetWork(work);
+#if DEBUG
+                DancyStep3PerformanceTelemetry.RecordElapsed("TargetInspectionAcquisitionStep", stepStarted);
+#endif
+                processedSteps++;
                 lock (gate)
                 {
-                    if (!work.CancellationToken.IsCancellationRequested && work.Generation == targetGeneration && pendingTargetIds.Add(work.Request.Id))
-                        pendingTargetWork.Enqueue(work);
+                    acquisitionSteps++;
+                    lastSuccessfulProgressUtc = DateTimeOffset.UtcNow;
                 }
+                if (completed)
+                    StartTargetAnalysis(work);
+                else
+                {
+                    lock (gate)
+                    {
+                        if (!work.CancellationToken.IsCancellationRequested && work.Generation == targetGeneration)
+                            EnqueuePendingWork(work);
+                    }
+                }
+            }
+            catch (Exception exception)
+            {
+                QueueTargetFailure(work, exception);
+            }
+            finally
+            {
+                lock (gate)
+                    activeAcquisition = null;
             }
         }
 
+#if DEBUG
+        var acquisitionElapsed = Elapsed(started);
+        bool pendingAfterUpdate;
+        lock (gate)
+            pendingAfterUpdate = pendingTargetNodes.Count > 0;
+        DancyStep3PerformanceTelemetry.RecordTargetInspectionAcquisitionUpdate(
+            acquisitionElapsed,
+            FrameworkBudget,
+            limitedByStepCap: false,
+            hitEmergencyStepCap: processedSteps >= EmergencyMaximumFrameworkStepsPerUpdate && pendingAfterUpdate);
+#endif
+
         PublishCompletedWork();
+        ReportPendingWatchdog();
     }
 
     public void Dispose()
@@ -237,8 +415,9 @@ public sealed class TargetInspectionService : IDisposable
             compatibilityCancellation.Cancel();
             targetCancellation.Dispose();
             compatibilityCancellation.Dispose();
-            pendingTargetWork.Clear();
-            pendingTargetIds.Clear();
+            ClearPendingTargetWork();
+            targetWorkById.Clear();
+            activeBackgroundAnalysis.Clear();
             targetStructures.Clear();
             compatibilityByKey.Clear();
         }
@@ -246,7 +425,11 @@ public sealed class TargetInspectionService : IDisposable
 
     private bool AdvanceTargetWork(TargetWorkItem work)
     {
-        work.Resolver ??= dataSource.BeginResolution(work.Request.TimelineKey);
+        if (work.Resolver is null)
+        {
+            work.AcquisitionState = "Resolving game paths";
+            work.Resolver = dataSource.BeginResolution(work.Request.TimelineKey);
+        }
         if (!work.Resolver.IsCompleted)
         {
             work.Resolver.TryAdvance();
@@ -256,6 +439,7 @@ public sealed class TargetInspectionService : IDisposable
         if (work.Paths is null)
         {
             work.Paths = work.Resolver.Results.ToArray();
+            work.AcquisitionState = work.Paths.Length == 0 ? "No game paths found" : $"Reading PAPs (0/{work.Paths.Length})";
             if (work.Paths.Length == 0)
                 return true;
         }
@@ -263,6 +447,7 @@ public sealed class TargetInspectionService : IDisposable
         if (work.NextPathIndex < work.Paths.Length)
         {
             var path = work.Paths[work.NextPathIndex++];
+            work.AcquisitionState = $"Reading PAPs ({work.NextPathIndex}/{work.Paths.Length})";
             try
             {
                 work.Bytes.Add(new TargetPapBytes(path, dataSource.ReadTargetPapBytes(path)));
@@ -275,6 +460,7 @@ public sealed class TargetInspectionService : IDisposable
             return false;
         }
 
+        work.AcquisitionState = "Acquired";
         return true;
     }
 
@@ -285,46 +471,61 @@ public sealed class TargetInspectionService : IDisposable
 #endif
         var paths = work.Paths ?? Array.Empty<string>();
         var bytes = work.Bytes.ToArray();
-        _ = startWorker(() =>
+        lock (gate)
         {
-            try
+            work.AcquisitionState = "Acquired";
+            work.AnalysisState = "Queued";
+            activeBackgroundAnalysis.Add(work.Request.Id);
+        }
+        try
+        {
+            ObserveTargetWorker(startWorker(() =>
             {
-                work.CancellationToken.ThrowIfCancellationRequested();
-                TargetStructureSnapshot result;
-                if (work.ReadFailure is not null)
+                try
                 {
-                    result = FailedTarget(work.Request.DisplayName);
-                }
-                else if (paths.Length == 0)
-                {
-                    result = new TargetStructureSnapshot(
-                        TargetInspectionState.Ready,
-                        paths,
-                        Array.Empty<PapTargetInspection>(),
-                        new TargetStructureStatus(false, "Unavailable", $"Dancy recognizes {work.Request.DisplayName}, but could not find a usable current-game target. Refresh Data, then choose another target if it remains unavailable."));
-                }
-                else
-                {
+                    lock (gate)
+                        work.AnalysisState = "Running";
+                    work.CancellationToken.ThrowIfCancellationRequested();
+                    TargetStructureSnapshot result;
+                    if (work.ReadFailure is not null)
+                    {
+                        result = FailedTarget(work.Request.DisplayName, work.ReadFailure);
+                    }
+                    else if (paths.Length == 0)
+                    {
+                        result = new TargetStructureSnapshot(
+                            TargetInspectionState.Ready,
+                            paths,
+                            Array.Empty<PapTargetInspection>(),
+                            new TargetStructureStatus(false, "Unavailable", $"Dancy recognizes {work.Request.DisplayName}, but could not find a usable current-game target. Refresh Data, then choose another target if it remains unavailable."));
+                    }
+                    else
+                    {
 #if DEBUG
-                    DancyStep3PerformanceTelemetry.RecordTargetStructuralPreflight();
-                    using var timing = DancyStep3PerformanceTelemetry.Measure("InspectTargetStructure");
+                        DancyStep3PerformanceTelemetry.RecordTargetStructuralPreflight();
+                        using var timing = DancyStep3PerformanceTelemetry.Measure("InspectTargetStructure");
 #endif
-                    var inspections = bytes
-                        .Select(item => new PapTargetInspection(item.GamePath, InspectTargetPapBytes(item.Bytes)))
-                        .ToArray();
-                    result = new TargetStructureSnapshot(TargetInspectionState.Ready, paths, inspections, AnalyzeTargetStructure(work.Request, inspections));
+                        var inspections = bytes
+                            .Select(item => new PapTargetInspection(item.GamePath, InspectTargetPapBytes(item.Bytes)))
+                            .ToArray();
+                        result = new TargetStructureSnapshot(TargetInspectionState.Ready, paths, inspections, AnalyzeTargetStructure(work.Request, inspections));
+                    }
+                    QueueCompletedTargetWork(work, result);
                 }
-                completedTargetWork.Enqueue(new CompletedTargetWork(work.Request.Id, work.Generation, result));
-            }
-            catch (OperationCanceledException)
-            {
-                // A newer catalog generation owns the result now.
-            }
-            catch (Exception)
-            {
-                completedTargetWork.Enqueue(new CompletedTargetWork(work.Request.Id, work.Generation, FailedTarget(work.Request.DisplayName)));
-            }
-        }, work.CancellationToken);
+                catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
+                {
+                    RecordDiscardedTargetWork(work);
+                }
+                catch (Exception exception)
+                {
+                    QueueTargetFailure(work, exception);
+                }
+            }, work.CancellationToken), work);
+        }
+        catch (Exception exception)
+        {
+            QueueTargetFailure(work, exception);
+        }
     }
 
     private void AnalyzeCompatibility(
@@ -378,7 +579,7 @@ public sealed class TargetInspectionService : IDisposable
             }
             completedCompatibilityWork.Enqueue(new CompletedCompatibilityWork(key, generation, new TargetCompatibilitySnapshot(TargetInspectionState.Ready, result, selections)));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // A newer source selection owns compatibility now.
         }
@@ -397,8 +598,23 @@ public sealed class TargetInspectionService : IDisposable
         {
             lock (gate)
             {
-                if (!disposed && completed.Generation == targetGeneration)
-                    targetStructures[completed.Id] = completed.Snapshot;
+                if (disposed || completed.Generation != targetGeneration)
+                {
+                    discardedStaleResults++;
+                    continue;
+                }
+
+                targetStructures[completed.Id] = completed.Snapshot;
+                if (targetWorkById.TryGetValue(completed.Id, out var work))
+                {
+                    work.PublishedAtUtc = DateTimeOffset.UtcNow;
+                    work.AcquisitionState = completed.Snapshot.State == TargetInspectionState.Failed ? "Failed" : "Published";
+                    work.AnalysisState = completed.Snapshot.State == TargetInspectionState.Failed ? "Failed" : "Published";
+                }
+                completedResults++;
+                if (completed.Snapshot.State == TargetInspectionState.Failed)
+                    failedResults++;
+                lastSuccessfulProgressUtc = DateTimeOffset.UtcNow;
             }
         }
 
@@ -406,9 +622,183 @@ public sealed class TargetInspectionService : IDisposable
         {
             lock (gate)
             {
-                if (!disposed && completed.Generation == sourceGeneration)
-                    compatibilityByKey[completed.Key] = completed.Snapshot;
+                if (disposed || completed.Generation != sourceGeneration)
+                {
+                    discardedStaleResults++;
+                    continue;
+                }
+
+                compatibilityByKey[completed.Key] = completed.Snapshot;
             }
+        }
+    }
+
+    private static LinkedList<TargetWorkItem>[] CreatePriorityQueues()
+        => Enum.GetValues<TargetInspectionPriority>().Select(_ => new LinkedList<TargetWorkItem>()).ToArray();
+
+    private void EnqueuePendingWork(TargetWorkItem work)
+    {
+        var priority = (int)work.Priority;
+        var node = pendingTargetWork[priority].AddLast(work);
+        pendingTargetNodes[work.Request.Id] = node;
+        work.AcquisitionState = "Queued";
+    }
+
+    private TargetWorkItem? DequeuePendingWork()
+    {
+        foreach (var queue in pendingTargetWork)
+        {
+            if (queue.First is not { } node)
+                continue;
+
+            queue.RemoveFirst();
+            pendingTargetNodes.Remove(node.Value.Request.Id);
+            return node.Value;
+        }
+
+        return null;
+    }
+
+    private void PromotePendingWork(string id, TargetInspectionPriority priority)
+    {
+        if (!pendingTargetNodes.TryGetValue(id, out var node) || node.Value.Priority <= priority)
+            return;
+
+        node.List!.Remove(node);
+        node.Value.Priority = priority;
+        pendingTargetNodes[id] = pendingTargetWork[(int)priority].AddFirst(node.Value);
+        node.Value.AcquisitionState = "Queued (promoted)";
+    }
+
+    private void ClearPendingTargetWork()
+    {
+        foreach (var queue in pendingTargetWork)
+            queue.Clear();
+        pendingTargetNodes.Clear();
+        activeAcquisition = null;
+    }
+
+    private Dictionary<string, int> GetQueuePositions()
+    {
+        var positions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var position = 0;
+        foreach (var queue in pendingTargetWork)
+        {
+            foreach (var work in queue)
+                positions[work.Request.Id] = position++;
+        }
+
+        return positions;
+    }
+
+    private void QueueCompletedTargetWork(TargetWorkItem work, TargetStructureSnapshot snapshot)
+    {
+        lock (gate)
+        {
+            activeBackgroundAnalysis.Remove(work.Request.Id);
+            work.CompletedAtUtc = DateTimeOffset.UtcNow;
+            work.AnalysisState = "Completed (awaiting publish)";
+        }
+        completedTargetWork.Enqueue(new CompletedTargetWork(work.Request.Id, work.Generation, snapshot));
+    }
+
+    private void QueueTargetFailure(TargetWorkItem work, Exception exception)
+    {
+        lock (gate)
+        {
+            activeBackgroundAnalysis.Remove(work.Request.Id);
+            work.CompletedAtUtc = DateTimeOffset.UtcNow;
+            work.AcquisitionState = "Failed";
+            work.AnalysisState = $"Failed: {exception.GetType().Name}";
+        }
+        completedTargetWork.Enqueue(new CompletedTargetWork(work.Request.Id, work.Generation, FailedTarget(work.Request.DisplayName, exception)));
+    }
+
+    private void RecordDiscardedTargetWork(TargetWorkItem work)
+    {
+        lock (gate)
+        {
+            activeBackgroundAnalysis.Remove(work.Request.Id);
+            discardedStaleResults++;
+            work.AnalysisState = "Discarded as stale";
+        }
+    }
+
+    private void ObserveTargetWorker(Task worker, TargetWorkItem work)
+        => _ = ObserveTargetWorkerAsync(worker, work);
+
+    private async Task ObserveTargetWorkerAsync(Task worker, TargetWorkItem work)
+    {
+        try
+        {
+            await worker.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (work.CancellationToken.IsCancellationRequested)
+        {
+            RecordDiscardedTargetWork(work);
+        }
+        catch (Exception exception)
+        {
+            QueueTargetFailure(work, exception);
+        }
+    }
+
+    private void ObserveCompatibilityWorker(Task worker, string key, long generation, CancellationToken cancellationToken)
+        => _ = ObserveCompatibilityWorkerAsync(worker, key, generation, cancellationToken);
+
+    private async Task ObserveCompatibilityWorkerAsync(Task worker, string key, long generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await worker.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Source changes clear the previous generation's pending state.
+        }
+        catch (Exception exception)
+        {
+            completedCompatibilityWork.Enqueue(new CompletedCompatibilityWork(
+                key,
+                generation,
+                new TargetCompatibilitySnapshot(
+                    TargetInspectionState.Failed,
+                    new PapCompatibilityResult(PapCompatibilityStatus.Unknown, $"Dancy compatibility inspection failed: {exception.Message}"))));
+        }
+    }
+
+    private void ReportPendingWatchdog()
+    {
+        if (pendingWarning is null)
+            return;
+
+        List<string>? warnings = null;
+        lock (gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            foreach (var work in targetWorkById.Values)
+            {
+                if (!targetStructures.TryGetValue(work.Request.Id, out var snapshot) || snapshot.State != TargetInspectionState.Pending)
+                    continue;
+
+                var age = now - work.RequestedAtUtc;
+                if (age >= TimeSpan.FromSeconds(PendingAbnormalSeconds) && !work.ReportedAbnormalPending)
+                {
+                    work.ReportedAbnormalPending = true;
+                    (warnings ??= []).Add($"[Dancy] Target inspection has remained pending for {age.TotalSeconds:F1}s: {work.Request.DisplayName} [{work.Request.Id}], acquisition={work.AcquisitionState}, analysis={work.AnalysisState}, generation={work.Generation}.");
+                }
+                else if (age >= TimeSpan.FromSeconds(PendingWarningSeconds) && !work.ReportedSlowPending)
+                {
+                    work.ReportedSlowPending = true;
+                    (warnings ??= []).Add($"[Dancy] Target inspection is still pending after {age.TotalSeconds:F1}s: {work.Request.DisplayName} [{work.Request.Id}], acquisition={work.AcquisitionState}, analysis={work.AnalysisState}, generation={work.Generation}.");
+                }
+            }
+        }
+
+        if (warnings is not null)
+        {
+            foreach (var warning in warnings)
+                pendingWarning(warning);
         }
     }
 
@@ -441,12 +831,17 @@ public sealed class TargetInspectionService : IDisposable
             $"Dancy recognizes {request.DisplayName}, but its current animation layout is not one Dancy can safely override. Choose a compatible target instead.");
     }
 
-    private static TargetStructureSnapshot FailedTarget(string displayName)
+    private static TargetStructureSnapshot FailedTarget(string displayName, Exception? exception = null)
         => new(
             TargetInspectionState.Failed,
             Array.Empty<string>(),
             Array.Empty<PapTargetInspection>(),
-            new TargetStructureStatus(false, "Unavailable", $"Dancy could not inspect {displayName} yet. Refresh Data or choose another target."));
+            new TargetStructureStatus(
+                false,
+                "Unavailable",
+                exception is null
+                    ? $"Dancy could not inspect {displayName} yet. Refresh Data or choose another target."
+                    : $"Dancy could not inspect {displayName}: {exception.Message}"));
 
     private static PapFileInspector.PapFileInspection InspectTargetPapBytes(byte[] bytes)
     {
@@ -466,16 +861,26 @@ public sealed class TargetInspectionService : IDisposable
 
     private sealed class TargetWorkItem
     {
-        public TargetWorkItem(TargetInspectionRequest request, long generation, CancellationToken cancellationToken)
+        public TargetWorkItem(TargetInspectionRequest request, TargetInspectionPriority priority, long generation, CancellationToken cancellationToken)
         {
             Request = request;
+            Priority = priority;
             Generation = generation;
             CancellationToken = cancellationToken;
+            RequestedAtUtc = DateTimeOffset.UtcNow;
         }
 
         public TargetInspectionRequest Request { get; }
+        public TargetInspectionPriority Priority { get; set; }
         public long Generation { get; }
         public CancellationToken CancellationToken { get; }
+        public DateTimeOffset RequestedAtUtc { get; }
+        public DateTimeOffset? CompletedAtUtc { get; set; }
+        public DateTimeOffset? PublishedAtUtc { get; set; }
+        public string AcquisitionState { get; set; } = "Queued";
+        public string AnalysisState { get; set; } = "Not started";
+        public bool ReportedSlowPending { get; set; }
+        public bool ReportedAbnormalPending { get; set; }
         public IIncrementalTargetPathResolution? Resolver { get; set; }
         public string[]? Paths { get; set; }
         public int NextPathIndex { get; set; }
